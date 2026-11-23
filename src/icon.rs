@@ -1,4 +1,4 @@
-//! The app icon, drawn in code (no image files): a white controller on a red rounded square.
+//! The app icon, drawn in code (no image files): an ivory controller on a graphite rounded square.
 
 /// Coverage (0..1) of the controller silhouette at a point in a 0..1 square.
 fn controller(x: f32, y: f32) -> bool {
@@ -9,7 +9,7 @@ fn controller(x: f32, y: f32) -> bool {
         x >= x0 && x <= x1 && y >= y0 && y <= y1 && qx * qx + qy * qy <= r * r
     };
     let body = rrect(0.13, 0.31, 0.87, 0.58, 0.12) || circle(0.26, 0.64, 0.14) || circle(0.74, 0.64, 0.14);
-    // d-pad "+" on the left and four face buttons on the right, cut out so the red shows through
+    // d-pad "+" on the left and four face buttons on the right, cut out so the background shows through
     let dpad = (x - 0.30).abs() < 0.075 && (y - 0.445).abs() < 0.022 || (x - 0.30).abs() < 0.022 && (y - 0.445).abs() < 0.075;
     let face = [(0.70, 0.385), (0.70, 0.505), (0.64, 0.445), (0.76, 0.445)].iter().any(|&(cx, cy)| circle(cx, cy, 0.03));
     body && !dpad && !face
@@ -41,8 +41,8 @@ pub fn rgba(n: u32) -> Vec<u8> {
             let total = (s * s) as f32;
             let a = bg as f32 / total;
             let w = if bg > 0 { fg as f32 / bg as f32 } else { 0.0 };
-            let mix = |red: f32, white: f32| (red + (white - red) * w).round() as u8;
-            out.extend_from_slice(&[mix(228.0, 255.0), mix(30.0, 255.0), mix(42.0, 255.0), (a * 255.0).round() as u8]);
+            let mix = |bg: f32, fg: f32| (bg + (fg - bg) * w).round() as u8;
+            out.extend_from_slice(&[mix(30.0, 232.0), mix(30.0, 228.0), mix(34.0, 220.0), (a * 255.0).round() as u8]);
         }
     }
     out
@@ -105,10 +105,10 @@ mod tests {
         assert_eq!(dib(32).len(), 40 + 32 * 32 * 4 + 4 * 32);
         let ico = ico_file();
         assert_eq!(&ico[..6], &[0, 0, 1, 0, 6, 0]);
-        // centre is white (controller body), corner is transparent
+        // centre is ivory (controller body), corner is transparent
         let p = rgba(64);
         let at = |x: usize, y: usize| &p[(y * 64 + x) * 4..(y * 64 + x) * 4 + 4];
-        assert_eq!(at(32, 26), &[255, 255, 255, 255]);
+        assert_eq!(at(32, 26), &[232, 228, 220, 255]);
         assert_eq!(at(0, 0)[3], 0);
     }
 }

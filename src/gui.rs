@@ -9,38 +9,123 @@ use crate::settings::{self, Settings};
 use crate::sys::*;
 use crate::updater::{self, Release, UpdateError};
 use eframe::egui::{
-    self, pos2, vec2, Align2, Color32, CornerRadius, FontFamily, FontId, Pos2, Rect, Response, RichText, Sense, Shape, Stroke,
-    StrokeKind, ViewportCommand,
+    self, pos2, vec2, Align2, Color32, CornerRadius, FontFamily, FontId, Painter, Pos2, Rect, Response, RichText, Sense, Shape,
+    Stroke, StrokeKind, ViewportCommand,
 };
-use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-const BG: Color32 = Color32::from_rgb(12, 12, 15);
-const SURFACE: Color32 = Color32::from_rgb(22, 22, 27);
-const SURFACE2: Color32 = Color32::from_rgb(33, 33, 40);
-const LINE: Color32 = Color32::from_rgb(44, 44, 53);
-const TEXT: Color32 = Color32::from_rgb(240, 240, 244);
-const MUTED: Color32 = Color32::from_rgb(140, 140, 152);
-const RED: Color32 = Color32::from_rgb(227, 38, 46); // accent
-const RED_DARK: Color32 = Color32::from_rgb(140, 22, 28);
-const RED_LIGHT: Color32 = Color32::from_rgb(255, 120, 126);
-const GREEN: Color32 = Color32::from_rgb(48, 209, 88);
-const YELLOW: Color32 = Color32::from_rgb(255, 196, 0);
-const ORANGE: Color32 = Color32::from_rgb(255, 149, 0); // errors (red is the accent)
-// controller
-const WHITE: Color32 = Color32::from_rgb(246, 246, 248);
-const SHADE: Color32 = Color32::from_rgb(218, 220, 226);
-const INK: Color32 = Color32::from_rgb(20, 20, 24);
-const INK2: Color32 = Color32::from_rgb(46, 46, 54);
-const SYM: [Color32; 4] = [
-    Color32::from_rgb(0, 168, 140),  // triangle
-    Color32::from_rgb(232, 52, 72),  // circle
-    Color32::from_rgb(70, 120, 230), // cross
-    Color32::from_rgb(214, 90, 180), // square
-];
-const TITLE_H: f32 = 44.0;
+// warm graphite, ivory text, one quiet accent the user picks
+const BG: Color32 = Color32::from_rgb(15, 15, 17);
+const SURFACE: Color32 = Color32::from_rgb(21, 21, 24);
+const SURFACE2: Color32 = Color32::from_rgb(31, 31, 35);
+const HOVER: Color32 = Color32::from_rgb(44, 44, 49);
+const LINE: Color32 = Color32::from_rgb(38, 38, 43);
+const TEXT: Color32 = Color32::from_rgb(232, 229, 223);
+const MUTED: Color32 = Color32::from_rgb(130, 127, 121);
+const OK: Color32 = Color32::from_rgb(140, 184, 146);
+const WAIT: Color32 = Color32::from_rgb(212, 180, 118);
+const ERR: Color32 = Color32::from_rgb(210, 124, 98);
+const TITLE_H: f32 = 56.0;
+const FOOT_H: f32 = 40.0;
 const RADIUS: u8 = 14;
+
+/// Accent presets: muted, warm tones (name, 0xRRGGBB).
+pub const PRESETS: [(&str, u32); 6] = [
+    ("Champagne", 0xC9B37E),
+    ("Sage", 0x8FA98A),
+    ("Slate", 0x8A9BB5),
+    ("Rosé", 0xC49A9A),
+    ("Bronze", 0xB08D6E),
+    ("Ivory", 0xE2DDD2),
+];
+
+static ACCENT: AtomicU32 = AtomicU32::new(0xC9B37E);
+
+fn accent() -> Color32 {
+    let v = ACCENT.load(Relaxed);
+    Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8)
+}
+
+/// Text colour that reads on top of the accent.
+fn on_accent(c: Color32) -> Color32 {
+    if 0.299 * c.r() as f32 + 0.587 * c.g() as f32 + 0.114 * c.b() as f32 > 140.0 { BG } else { TEXT }
+}
+
+fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
+    let l = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    Color32::from_rgb(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
+}
+
+/// Soft mechanical clicks for sliders and checkboxes, made in code and played from memory.
+mod sound {
+    use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+
+    pub static ON: AtomicBool = AtomicBool::new(true);
+    static WAVS: OnceLock<[Vec<u8>; 2]> = OnceLock::new();
+    static LAST: Mutex<Option<Instant>> = Mutex::new(None);
+
+    /// A short 16-bit mono WAV: a sine with a touch of noise, fast attack, quick decay.
+    pub fn wav(freq: f32, ms: f32, vol: f32) -> Vec<u8> {
+        let rate = 44_100u32;
+        let n = (rate as f32 * ms / 1000.0) as u32;
+        let mut w = Vec::with_capacity(44 + n as usize * 2);
+        w.extend(b"RIFF");
+        w.extend((36 + n * 2).to_le_bytes());
+        w.extend(b"WAVEfmt ");
+        for v in [16u32] {
+            w.extend(v.to_le_bytes());
+        }
+        for v in [1u16, 1] {
+            w.extend(v.to_le_bytes()); // PCM, mono
+        }
+        w.extend(rate.to_le_bytes());
+        w.extend((rate * 2).to_le_bytes());
+        for v in [2u16, 16] {
+            w.extend(v.to_le_bytes());
+        }
+        w.extend(b"data");
+        w.extend((n * 2).to_le_bytes());
+        let tau = ms / 1000.0 / 4.0;
+        let mut seed = 0x1234_5678u32;
+        for i in 0..n {
+            let t = i as f32 / rate as f32;
+            let env = if t < 0.0004 { t / 0.0004 } else { (-(t - 0.0004) / tau).exp() };
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let noise = (seed >> 16) as f32 / 32_768.0 - 1.0;
+            let s = (0.8 * (std::f32::consts::TAU * freq * t).sin() + 0.2 * noise) * env * vol;
+            w.extend(((s.clamp(-1.0, 1.0) * 32_767.0) as i16).to_le_bytes());
+        }
+        w
+    }
+
+    fn play(i: usize, gap_ms: u64) {
+        if !ON.load(Relaxed) {
+            return;
+        }
+        let mut last = LAST.lock().unwrap();
+        if last.is_some_and(|t| t.elapsed() < Duration::from_millis(gap_ms)) {
+            return;
+        }
+        *last = Some(Instant::now());
+        let w = &WAVS.get_or_init(|| [wav(2300.0, 9.0, 0.09), wav(1200.0, 16.0, 0.11)])[i];
+        // SND_ASYNC | SND_NODEFAULT | SND_MEMORY; the buffer is static so it outlives playback
+        unsafe { crate::sys::PlaySoundW(w.as_ptr(), 0, 0x0001 | 0x0002 | 0x0004) };
+    }
+
+    /// One detent of a slider.
+    pub fn tick() {
+        play(0, 28);
+    }
+
+    /// A checkbox or button.
+    pub fn click() {
+        play(1, 0);
+    }
+}
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Mode {
@@ -48,6 +133,13 @@ pub enum Mode {
     Install,
     Uninstall,
     Banner, // README artwork, only for --render
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Tab {
+    Controller,
+    Settings,
+    About,
 }
 
 pub fn run(mode: Mode) {
@@ -69,9 +161,9 @@ fn launch(mode: Mode, render_to: Option<std::path::PathBuf>) {
         }
     }
     let size = match mode {
-        Mode::Main => [500.0, 830.0],
-        Mode::Install => [470.0, 650.0],
-        Mode::Uninstall => [440.0, 300.0],
+        Mode::Main => [860.0, 560.0],
+        Mode::Install => [560.0, 600.0],
+        Mode::Uninstall => [460.0, 300.0],
         Mode::Banner => [1280.0, 640.0],
     };
     let opts = eframe::NativeOptions {
@@ -88,12 +180,13 @@ fn launch(mode: Mode, render_to: Option<std::path::PathBuf>) {
         APP,
         opts,
         Box::new(move |cc| {
-            style(&cc.egui_ctx);
+            set_fonts(&cc.egui_ctx);
             let mut app = App::new(&cc.egui_ctx, mode, ui_mutex);
             if render_to.is_some() {
                 app.demo = Some(demo_status());
                 app.vigem = true;
                 app.render_to = render_to;
+                sound::ON.store(false, Relaxed);
             }
             Ok(Box::new(app))
         }),
@@ -121,27 +214,28 @@ fn set_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
-fn style(ctx: &egui::Context) {
-    set_fonts(ctx);
+fn visuals(ctx: &egui::Context) {
+    let a = accent();
     let mut v = egui::Visuals::dark();
     v.panel_fill = Color32::TRANSPARENT;
     v.window_fill = SURFACE;
+    v.window_stroke = Stroke::new(1.0, LINE);
+    v.window_corner_radius = CornerRadius::same(10);
     v.extreme_bg_color = SURFACE2;
-    v.selection.bg_fill = RED;
-    v.selection.stroke = Stroke::new(1.0, WHITE);
+    v.selection.bg_fill = a.gamma_multiply(0.35);
+    v.selection.stroke = Stroke::new(1.0, a);
     v.override_text_color = Some(TEXT);
-    v.slider_trailing_fill = true;
-    v.hyperlink_color = RED_LIGHT;
+    v.hyperlink_color = a;
     for w in [&mut v.widgets.inactive, &mut v.widgets.hovered, &mut v.widgets.active, &mut v.widgets.noninteractive, &mut v.widgets.open] {
-        w.corner_radius = CornerRadius::same(10);
+        w.corner_radius = CornerRadius::same(8);
         w.bg_stroke = Stroke::NONE;
     }
     v.widgets.inactive.bg_fill = SURFACE2;
     v.widgets.inactive.weak_bg_fill = SURFACE2;
-    v.widgets.hovered.bg_fill = LINE;
-    v.widgets.hovered.weak_bg_fill = LINE;
-    v.widgets.active.bg_fill = RED;
-    v.widgets.active.weak_bg_fill = RED_DARK;
+    v.widgets.hovered.bg_fill = HOVER;
+    v.widgets.hovered.weak_bg_fill = HOVER;
+    v.widgets.active.bg_fill = HOVER;
+    v.widgets.active.weak_bg_fill = HOVER;
     v.widgets.open.weak_bg_fill = SURFACE2;
     ctx.set_visuals(v);
 }
@@ -172,6 +266,7 @@ enum Inst {
 
 struct App {
     mode: Mode,
+    tab: Tab,
     sh: &'static Shared,
     settings: Settings,
     deadzone: f32,
@@ -186,12 +281,12 @@ struct App {
     inst: Inst,
     vigem: bool,
     removed: bool,
-    demo: Option<Status>,                     // --render: fixed values instead of the live bridge
+    demo: Option<Status>, // --render: fixed values instead of the live bridge
     render_to: Option<std::path::PathBuf>,
     frames: u32,
 }
 
-/// What the README screenshots show: Bluetooth, cross + R2 pressed, left stick pushed.
+/// What the README screenshots show: Bluetooth, cross + R1 pressed, R2 half way, left stick pushed.
 fn demo_status() -> Status {
     Status {
         running: true,
@@ -211,10 +306,14 @@ fn demo_status() -> Status {
 impl App {
     fn new(ctx: &egui::Context, mode: Mode, ui_mutex: Handle) -> Self {
         let settings = settings::load();
+        ACCENT.store(settings.accent, Relaxed);
+        sound::ON.store(settings.sounds, Relaxed);
+        visuals(ctx);
         let n = 128;
         let logo = ctx.load_texture("logo", egui::ColorImage::from_rgba_unmultiplied([n, n], &crate::icon::rgba(n as u32)), Default::default());
         let app = App {
             mode,
+            tab: Tab::Controller,
             sh: ipc::open(),
             deadzone: settings.deadzone as f32 / 1000.0,
             autostart: installer::autostart_enabled(),
@@ -243,6 +342,13 @@ impl App {
         settings::save(&self.settings);
     }
 
+    fn set_accent(&mut self, ctx: &egui::Context, rgb: u32) {
+        ACCENT.store(rgb, Relaxed);
+        self.settings.accent = rgb;
+        self.save();
+        visuals(ctx);
+    }
+
     fn check_updates(&self) {
         let upd = self.upd.clone();
         {
@@ -264,8 +370,7 @@ impl App {
             s.last_check = settings::now();
             settings::save(&s);
         });
-        // keep our copy in step so the next save does not overwrite last_check with an old value
-        // ponytail: last_check only throttles the automatic check, so a tiny race here is harmless
+        // ponytail: last_check only throttles the automatic check, so a tiny race with our own save is harmless
     }
 
     fn start_update(&self) {
@@ -305,7 +410,7 @@ impl App {
     fn language_picker(&mut self, ui: &mut egui::Ui) {
         let cur = i18n::cur();
         let mut pick = None;
-        egui::ComboBox::from_id_salt("lang").selected_text(i18n::native(cur)).width(150.0).show_ui(ui, |ui| {
+        egui::ComboBox::from_id_salt("lang").selected_text(i18n::native(cur)).width(170.0).show_ui(ui, |ui| {
             for id in 0..i18n::LANGS.len() {
                 if ui.selectable_label(id == cur, i18n::native(id)).clicked() {
                     pick = Some(id);
@@ -313,8 +418,13 @@ impl App {
             }
         });
         if let Some(id) = pick {
+            sound::click();
             self.set_language(ui.ctx(), id);
         }
+    }
+
+    fn status(&self) -> Status {
+        self.demo.clone().unwrap_or_else(|| self.sh.status())
     }
 }
 
@@ -332,17 +442,20 @@ impl eframe::App for App {
             return self.banner(ui, full);
         }
         ui.painter().rect(full, RADIUS, BG, Stroke::new(1.0, LINE), StrokeKind::Inside);
-        title_bar(ui, full, &self.logo);
+        let tab = if self.mode == Mode::Main { Some(&mut self.tab) } else { None };
+        title_bar(ui, full, &self.logo, tab);
 
-        let content = Rect::from_min_max(full.min + vec2(20.0, TITLE_H + 2.0), full.max - vec2(20.0, 14.0));
-        let mut cui = ui.new_child(egui::UiBuilder::new().max_rect(content));
-        cui.spacing_mut().item_spacing = vec2(12.0, 12.0);
-        egui::ScrollArea::vertical().auto_shrink(false).show(&mut cui, |ui| match self.mode {
-            Mode::Main => self.main_view(ui),
-            Mode::Install => self.install_view(ui),
-            Mode::Uninstall => self.uninstall_view(ui),
-            Mode::Banner => {}
-        });
+        if self.mode == Mode::Main {
+            self.main_layout(ui, full);
+        } else {
+            let content = Rect::from_min_max(full.min + vec2(32.0, TITLE_H + 24.0), full.max - vec2(32.0, 24.0));
+            let mut cui = ui.new_child(egui::UiBuilder::new().max_rect(content));
+            cui.spacing_mut().item_spacing = vec2(10.0, 10.0);
+            egui::ScrollArea::vertical().auto_shrink(false).show(&mut cui, |ui| match self.mode {
+                Mode::Install => self.install_view(ui),
+                _ => self.uninstall_view(ui),
+            });
+        }
 
         // repaint smoothly only while something changes; otherwise nearly no CPU
         let s = self.sh.status();
@@ -375,32 +488,28 @@ impl App {
         ctx.request_repaint();
     }
 
-    /// README banner: logo, name, tagline, feature chips, the controller.
+    /// README banner: logo, name, tagline, feature chips, the live preview.
     fn banner(&mut self, ui: &mut egui::Ui, full: Rect) {
         let p = ui.painter().clone();
         p.rect_filled(full, 0.0, BG);
-        let cc = pos2(full.right() - 330.0, full.center().y + 10.0);
-        for (i, a) in [(0, 0.07), (1, 0.045), (2, 0.025), (3, 0.012)] {
-            p.circle_filled(cc, 230.0 + i as f32 * 70.0, RED.gamma_multiply(a));
-        }
         let left = full.left() + 80.0;
-        let logo = Rect::from_min_size(pos2(left, 150.0), vec2(84.0, 84.0));
+        let logo = Rect::from_min_size(pos2(left, 150.0), vec2(76.0, 76.0));
         p.image(self.logo.id(), logo, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
-        p.text(pos2(left, 262.0), Align2::LEFT_TOP, APP, FontId::proportional(72.0), TEXT);
-        p.text(pos2(left + 3.0, 352.0), Align2::LEFT_TOP, "PS5 DualSense → Xbox controller", FontId::proportional(28.0), TEXT);
-        p.text(pos2(left + 3.0, 392.0), Align2::LEFT_TOP, "for Windows · USB & Bluetooth", FontId::proportional(28.0), MUTED);
+        p.text(pos2(left, 256.0), Align2::LEFT_TOP, APP, FontId::proportional(68.0), TEXT);
+        p.text(pos2(left + 3.0, 344.0), Align2::LEFT_TOP, "PS5 DualSense → Xbox controller", FontId::proportional(26.0), TEXT);
+        p.text(pos2(left + 3.0, 382.0), Align2::LEFT_TOP, "for Windows · USB & Bluetooth", FontId::proportional(26.0), MUTED);
         let mut x = left;
         for chip in ["Offline", "No telemetry", "Open source · MIT", "8 languages"] {
-            let g = p.layout_no_wrap(chip.to_string(), FontId::proportional(17.0), TEXT);
-            let r = Rect::from_min_size(pos2(x, 462.0), g.size() + vec2(28.0, 16.0));
-            p.rect(r, 18.0, SURFACE2, Stroke::new(1.0, LINE), StrokeKind::Inside);
-            p.galley(r.min + vec2(14.0, 8.0), g, TEXT);
+            let g = p.layout_no_wrap(chip.to_string(), FontId::proportional(16.0), TEXT);
+            let r = Rect::from_min_size(pos2(x, 452.0), g.size() + vec2(26.0, 14.0));
+            p.rect(r, 8.0, SURFACE2, Stroke::new(1.0, LINE), StrokeKind::Inside);
+            p.galley(r.min + vec2(13.0, 7.0), g, TEXT);
             x = r.right() + 10.0;
         }
-        let area = Rect::from_center_size(cc, vec2(560.0, 360.0));
-        let s = self.demo.clone().unwrap_or_default();
-        let mut cui = ui.new_child(egui::UiBuilder::new().max_rect(area));
-        controller(&mut cui, &s);
+        let panel = Rect::from_min_size(pos2(full.right() - 620.0, 110.0), vec2(540.0, 420.0));
+        p.rect(panel, 14.0, SURFACE, Stroke::new(1.0, LINE), StrokeKind::Inside);
+        p.text(panel.min + vec2(0.0, -26.0), Align2::LEFT_TOP, "LIVE PREVIEW", FontId::proportional(13.0), MUTED);
+        controller(&p, panel.shrink(30.0), &self.demo.clone().unwrap_or_default());
     }
 }
 
@@ -414,25 +523,52 @@ impl Drop for App {
 
 // ------------------------------------------------------------- chrome ---
 
-fn title_bar(ui: &mut egui::Ui, full: Rect, logo: &egui::TextureHandle) {
+/// Logo pill, tabs (main window only), minimise and close.
+fn title_bar(ui: &mut egui::Ui, full: Rect, logo: &egui::TextureHandle, tab: Option<&mut Tab>) {
     let bar = Rect::from_min_size(full.min, vec2(full.width(), TITLE_H));
     let p = ui.painter().clone();
     let drag = ui.interact(bar, ui.scope_id().with("titlebar"), Sense::click_and_drag());
     if drag.drag_started() {
         ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
     }
-    let icon = Rect::from_center_size(pos2(bar.left() + 24.0, bar.center().y), vec2(20.0, 20.0));
+    p.line_segment([pos2(bar.left(), bar.bottom()), pos2(bar.right(), bar.bottom())], Stroke::new(1.0, LINE));
+
+    let name = p.layout_no_wrap(APP.to_string(), FontId::proportional(13.5), TEXT);
+    let pill = Rect::from_min_size(pos2(bar.left() + 14.0, bar.center().y - 17.0), vec2(name.size().x + 52.0, 34.0));
+    p.rect(pill, 9.0, SURFACE2, Stroke::new(1.0, LINE), StrokeKind::Inside);
+    let icon = Rect::from_center_size(pos2(pill.left() + 19.0, pill.center().y), vec2(18.0, 18.0));
     p.image(logo.id(), icon, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
-    p.text(pos2(icon.right() + 9.0, bar.center().y), Align2::LEFT_CENTER, APP, FontId::proportional(14.0), TEXT);
+    p.galley(pos2(icon.right() + 9.0, pill.center().y - name.size().y / 2.0), name, TEXT);
+
+    if let Some(tab) = tab {
+        let mut x = pill.right() + 28.0;
+        for (t, label) in [(Tab::Controller, tr("Controller")), (Tab::Settings, tr("Settings")), (Tab::About, tr("About"))] {
+            let g = p.layout_no_wrap(label.to_string(), FontId::proportional(14.0), TEXT);
+            let r = Rect::from_min_size(pos2(x, bar.top()), vec2(g.size().x, TITLE_H));
+            let resp = ui.interact(r, ui.scope_id().with(("tab", label)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+            if resp.clicked() && *tab != t {
+                *tab = t;
+                sound::click();
+            }
+            let active = *tab == t;
+            let color = if active || resp.hovered() { TEXT } else { MUTED };
+            p.galley(pos2(x, bar.center().y - g.size().y / 2.0), g.clone(), color);
+            if active {
+                let y = bar.bottom() - 10.0;
+                p.line_segment([pos2(x, y), pos2(x + g.size().x, y)], Stroke::new(2.0, accent()));
+            }
+            x += g.size().x + 28.0;
+        }
+    }
 
     let w = 46.0;
-    let close = Rect::from_min_size(pos2(bar.right() - w, bar.top()), vec2(w, TITLE_H));
+    let close = Rect::from_min_size(pos2(bar.right() - w, bar.top()), vec2(w, TITLE_H - 1.0));
     let min = close.translate(vec2(-w, 0.0));
     for (rect, is_close) in [(min, false), (close, true)] {
         let r = ui.interact(rect, ui.scope_id().with(("winbtn", is_close)), Sense::click());
         if r.hovered() {
             let radius = if is_close { CornerRadius { ne: RADIUS, ..Default::default() } } else { CornerRadius::ZERO };
-            p.rect_filled(rect, radius, if is_close { Color32::from_rgb(196, 43, 28) } else { SURFACE2 });
+            p.rect_filled(rect, radius, if is_close { Color32::from_rgb(170, 52, 44) } else { SURFACE2 });
         }
         let st = Stroke::new(1.2, if r.hovered() && is_close { Color32::WHITE } else { MUTED });
         let m = rect.center();
@@ -448,72 +584,179 @@ fn title_bar(ui: &mut egui::Ui, full: Rect, logo: &egui::TextureHandle) {
     }
 }
 
-fn card<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    egui::Frame::NONE
-        .fill(SURFACE)
-        .stroke(Stroke::new(1.0, LINE))
-        .corner_radius(16.0)
-        .inner_margin(16.0)
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            add(ui)
-        })
-        .inner
+/// Small uppercase section label.
+fn caption(ui: &mut egui::Ui, text: &str) {
+    ui.add_space(6.0);
+    ui.label(RichText::new(text).size(11.5).color(MUTED));
 }
 
-/// Settings row: title + description left, control right.
-fn row(ui: &mut egui::Ui, title: &str, desc: &str, control: impl FnOnce(&mut egui::Ui)) {
-    ui.horizontal(|ui| {
-        ui.vertical(|ui| {
-            ui.set_max_width(ui.available_width() - 170.0);
-            ui.spacing_mut().item_spacing.y = 2.0;
-            ui.label(RichText::new(title).size(15.0));
-            if !desc.is_empty() {
-                ui.label(RichText::new(desc).size(12.0).color(MUTED));
-            }
-        });
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), control);
-    });
-}
-
-fn toggle(ui: &mut egui::Ui, on: bool) -> Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(48.0, 28.0), Sense::click());
-    let t = ui.ctx().animate_bool(resp.id, on);
+/// Square checkbox with its label; plays a click.
+fn check(ui: &mut egui::Ui, on: &mut bool, label: &str) -> Response {
+    let g = ui.painter().layout_no_wrap(label.to_string(), FontId::proportional(14.0), TEXT);
+    let (rect, mut resp) = ui.allocate_exact_size(vec2(32.0 + g.size().x, 26.0), Sense::click());
+    if resp.clicked() {
+        *on = !*on;
+        sound::click();
+        resp.mark_changed();
+    }
+    let t = ui.ctx().animate_bool(resp.id, *on);
+    let b = Rect::from_center_size(pos2(rect.left() + 10.0, rect.center().y), vec2(20.0, 20.0));
     let p = ui.painter();
-    p.rect_filled(rect, 14.0, if on { RED } else { LINE });
-    let x = egui::lerp(rect.left() + 14.0..=rect.right() - 14.0, t);
-    p.circle_filled(pos2(x, rect.center().y), 10.0, Color32::WHITE);
+    let a = accent();
+    p.rect_filled(b, 5.0, mix(if resp.hovered() { HOVER } else { SURFACE2 }, a, t));
+    if t > 0.0 {
+        let c = b.center();
+        let pts = vec![c + vec2(-5.0, 0.5), c + vec2(-1.5, 4.0), c + vec2(5.0, -3.5)];
+        p.add(Shape::line(pts, Stroke::new(2.0, on_accent(a).gamma_multiply(t))));
+    }
+    p.galley(pos2(b.right() + 12.0, rect.center().y - g.size().y / 2.0), g, TEXT);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-fn big_button(ui: &mut egui::Ui, text: &str, fill: Color32) -> Response {
-    let b = egui::Button::new(RichText::new(text).size(15.0).color(Color32::WHITE)).fill(fill).corner_radius(12.0).min_size(vec2(ui.available_width(), 42.0));
-    ui.add(b).on_hover_cursor(egui::CursorIcon::PointingHand)
+/// Pill slider with the value in the middle and detents you can hear.
+fn slider(ui: &mut egui::Ui, v: &mut f32, lo: f32, hi: f32, step: f32, text: impl Fn(f32) -> String) -> Response {
+    let w = ui.available_width().min(240.0);
+    let (rect, mut resp) = ui.allocate_exact_size(vec2(w, 26.0), Sense::click_and_drag());
+    let pad = 13.0;
+    let span = rect.width() - 2.0 * pad;
+    if resp.dragged() || resp.clicked() {
+        if let Some(pos) = resp.interact_pointer_pos() {
+            let t = ((pos.x - rect.left() - pad) / span).clamp(0.0, 1.0);
+            let nv = (((lo + t * (hi - lo)) / step).round() * step).clamp(lo, hi);
+            if (nv - *v).abs() >= step * 0.5 {
+                *v = nv;
+                sound::tick();
+                resp.mark_changed();
+            }
+        }
+    }
+    let x = rect.left() + pad + (*v - lo) / (hi - lo) * span;
+    let p = ui.painter();
+    let a = accent();
+    p.rect_filled(rect, 13.0, SURFACE2);
+    p.rect_filled(Rect::from_min_max(rect.min, pos2(x + pad, rect.bottom())), 13.0, a.gamma_multiply(0.18));
+    p.text(rect.center(), Align2::CENTER_CENTER, text(*v), FontId::proportional(12.5), TEXT);
+    let grow = ui.ctx().animate_bool(resp.id.with("knob"), resp.hovered() || resp.dragged());
+    p.circle_filled(pos2(x, rect.center().y), 8.0 + grow * 1.5, TEXT);
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-fn small_button(ui: &mut egui::Ui, text: &str) -> Response {
-    ui.add(egui::Button::new(RichText::new(text).size(13.0)).corner_radius(10.0).min_size(vec2(0.0, 30.0))).on_hover_cursor(egui::CursorIcon::PointingHand)
+/// Label column + control, one line.
+fn field(ui: &mut egui::Ui, label: &str, control: impl FnOnce(&mut egui::Ui)) {
+    ui.horizontal(|ui| {
+        let (r, _) = ui.allocate_exact_size(vec2(140.0, 26.0), Sense::hover());
+        ui.painter().text(pos2(r.left(), r.center().y), Align2::LEFT_CENTER, label, FontId::proportional(13.5), MUTED);
+        control(ui);
+    });
+}
+
+fn primary(ui: &mut egui::Ui, text: &str) -> Response {
+    let a = accent();
+    let b = egui::Button::new(RichText::new(text).size(14.5).color(on_accent(a))).fill(a).corner_radius(9.0);
+    let r = ui.add_sized([ui.available_width(), 40.0], b).on_hover_cursor(egui::CursorIcon::PointingHand);
+    if r.clicked() {
+        sound::click();
+    }
+    r
+}
+
+fn secondary(ui: &mut egui::Ui, text: &str) -> Response {
+    let r = ui.add(egui::Button::new(RichText::new(text).size(13.0)).corner_radius(8.0).min_size(vec2(0.0, 28.0))).on_hover_cursor(egui::CursorIcon::PointingHand);
+    if r.clicked() {
+        sound::click();
+    }
+    r
 }
 
 fn link(ui: &mut egui::Ui, text: &str, url: &str) {
-    if ui.add(egui::Label::new(RichText::new(text).size(12.0).color(RED_LIGHT)).sense(Sense::click())).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+    if ui.add(egui::Label::new(RichText::new(text).size(12.5).color(accent())).sense(Sense::click())).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
         open_url(url);
     }
 }
 
 fn dot(ui: &mut egui::Ui, color: Color32) {
-    let (r, _) = ui.allocate_exact_size(vec2(14.0, 20.0), Sense::hover());
-    ui.painter().circle_filled(r.center(), 8.0, color.gamma_multiply(0.2));
-    ui.painter().circle_filled(r.center(), 4.0, color);
+    let (r, _) = ui.allocate_exact_size(vec2(12.0, 20.0), Sense::hover());
+    ui.painter().circle_filled(r.center(), 7.0, color.gamma_multiply(0.18));
+    ui.painter().circle_filled(r.center(), 3.5, color);
 }
 
 // ---------------------------------------------------------- main view ---
 
 impl App {
-    fn main_view(&mut self, ui: &mut egui::Ui) {
-        let s = self.demo.clone().unwrap_or_else(|| self.sh.status());
-        let bg_alive = self.demo.is_some() || mutex_exists(ipc::BG_MUTEX);
+    fn main_layout(&mut self, ui: &mut egui::Ui, full: Rect) {
+        let s = self.status();
+        let body = Rect::from_min_max(full.min + vec2(28.0, TITLE_H + 22.0), full.max - vec2(28.0, FOOT_H + 18.0));
+        let right = Rect::from_min_max(pos2(body.right() - 390.0, body.top()), body.max);
+        let left = Rect::from_min_max(body.min, pos2(right.left() - 32.0, body.bottom()));
 
+        let mut lui = ui.new_child(egui::UiBuilder::new().max_rect(left));
+        lui.spacing_mut().item_spacing = vec2(10.0, 8.0);
+        egui::ScrollArea::vertical().auto_shrink(false).show(&mut lui, |ui| match self.tab {
+            Tab::Controller => self.controller_tab(ui, &s),
+            Tab::Settings => self.settings_tab(ui),
+            Tab::About => self.about_tab(ui),
+        });
+
+        // live preview
+        let p = ui.painter().clone();
+        p.text(right.min, Align2::LEFT_TOP, tr("LIVE PREVIEW"), FontId::proportional(11.5), MUTED);
+        let panel = Rect::from_min_max(right.min + vec2(0.0, 24.0), right.max - vec2(0.0, 26.0));
+        p.rect(panel, 12.0, SURFACE, Stroke::new(1.0, LINE), StrokeKind::Inside);
+        controller(&p, panel.shrink(8.0), &s);
+        let hint = if s.controller == 0 { tr("Connect a DualSense to see it here.") } else { tr("Press any button to test it.") };
+        p.text(pos2(right.left(), right.bottom() - 2.0), Align2::LEFT_BOTTOM, hint, FontId::proportional(12.5), MUTED);
+
+        // footer
+        let foot = Rect::from_min_max(pos2(full.left(), full.bottom() - FOOT_H), full.max);
+        p.line_segment([foot.left_top(), foot.right_top()], Stroke::new(1.0, LINE));
+        let v = p.layout_no_wrap(format!("v{}", env!("CARGO_PKG_VERSION")), FontId::proportional(12.0), MUTED);
+        let pill = Rect::from_min_size(pos2(foot.left() + 14.0, foot.center().y - 12.0), vec2(v.size().x + 22.0, 24.0));
+        p.rect(pill, 7.0, SURFACE2, Stroke::new(1.0, LINE), StrokeKind::Inside);
+        p.galley(pill.center() - v.size() / 2.0, v, MUTED);
+        let mid = match s.controller {
+            1 | 2 if s.rate > 0 => format!("{} · {} Hz", if s.controller == 1 { "USB" } else { "Bluetooth" }, s.rate),
+            1 | 2 => (if s.controller == 1 { "USB" } else { "Bluetooth" }).to_string(),
+            _ => tr("No controller").to_string(),
+        };
+        p.text(foot.center(), Align2::CENTER_CENTER, mid, FontId::proportional(12.5), MUTED);
+        p.text(pos2(foot.right() - 18.0, foot.center().y), Align2::RIGHT_CENTER, format!("MIT · {}", tr("No telemetry")), FontId::proportional(12.5), MUTED);
+    }
+
+    fn status_line(&self, ui: &mut egui::Ui, s: &Status) {
+        let bg_alive = self.demo.is_some() || mutex_exists(ipc::BG_MUTEX);
+        let (text, color) = if !bg_alive {
+            (tr("The background service is not running").to_string(), MUTED)
+        } else if s.error != 0 {
+            let e = match s.error {
+                crate::win::ERR_NO_VIGEM => tr("ViGEmBus driver not found"),
+                crate::win::ERR_NO_SLOT => tr("No free virtual controller slot"),
+                _ => tr("Sending to the virtual controller failed"),
+            };
+            (e.to_string(), ERR)
+        } else if s.paused {
+            (tr("Paused").to_string(), MUTED)
+        } else {
+            match s.controller {
+                1 => (trf("Connected via {}", &[&"USB"]), OK),
+                2 => (trf("Connected via {}", &[&"Bluetooth"]), OK),
+                _ => (tr("Waiting for DualSense · USB or Bluetooth").to_string(), WAIT),
+            }
+        };
+        ui.horizontal(|ui| {
+            dot(ui, color);
+            ui.label(RichText::new(text).size(15.0));
+            if !bg_alive && secondary(ui, tr("Start")).clicked() {
+                if let Ok(me) = std::env::current_exe() {
+                    let _ = std::process::Command::new(me).arg("--background").spawn();
+                }
+            }
+        });
+        if s.error == crate::win::ERR_NO_VIGEM {
+            link(ui, tr("Get ViGEmBus (open source)"), "https://github.com/nefarius/ViGEmBus/releases");
+        }
+    }
+
+    fn controller_tab(&mut self, ui: &mut egui::Ui, s: &Status) {
         // update finished: hand over to the new version
         if let Phase::Done(target) = &self.upd.lock().unwrap().phase {
             if self.ui_mutex != 0 {
@@ -523,7 +766,6 @@ impl App {
             let _ = std::process::Command::new(target).spawn();
             ui.ctx().send_viewport_cmd(ViewportCommand::Close);
         }
-
         let release = self.upd.lock().unwrap().release.clone();
         if self.show_update {
             if let Some(r) = release {
@@ -532,174 +774,212 @@ impl App {
             self.show_update = false;
         }
         if let Some(r) = &release {
-            card(ui, |ui| {
-                ui.horizontal(|ui| {
-                    dot(ui, RED);
-                    ui.label(RichText::new(trf("Update available: {}", &[&r.version])).size(15.0));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if small_button(ui, tr("Show")).clicked() {
-                            self.show_update = true;
-                        }
-                    });
-                });
+            ui.horizontal(|ui| {
+                dot(ui, accent());
+                ui.label(RichText::new(trf("Update available: {}", &[&r.version])).size(14.0));
+                if secondary(ui, tr("Show")).clicked() {
+                    self.show_update = true;
+                }
             });
         }
 
-        // status
-        let (text, color) = if !bg_alive {
-            (tr("The background service is not running").to_string(), MUTED)
-        } else if s.error != 0 {
-            let e = match s.error {
-                crate::win::ERR_NO_VIGEM => tr("ViGEmBus driver not found"),
-                crate::win::ERR_NO_SLOT => tr("No free virtual controller slot"),
-                _ => tr("Sending to the virtual controller failed"),
-            };
-            (e.to_string(), ORANGE)
-        } else if s.paused {
-            (tr("Paused").to_string(), MUTED)
-        } else {
-            match s.controller {
-                1 => (trf("Connected via {}", &[&"USB"]), GREEN),
-                2 => (trf("Connected via {}", &[&"Bluetooth"]), GREEN),
-                _ => (tr("Waiting for DualSense · USB or Bluetooth").to_string(), YELLOW),
-            }
+        self.status_line(ui, s);
+        caption(ui, tr("CONNECTION"));
+        let live = s.rate > 0;
+        let dash = || "–".to_string();
+        let conn = match s.controller {
+            1 => "USB".to_string(),
+            2 => "Bluetooth".to_string(),
+            _ => dash(),
         };
-        ui.horizontal(|ui| {
-            dot(ui, color);
-            ui.label(RichText::new(text).size(15.0).color(color));
-            if !bg_alive {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if small_button(ui, tr("Start")).clicked() {
-                        if let Ok(me) = std::env::current_exe() {
-                            let _ = std::process::Command::new(me).arg("--background").spawn();
-                        }
-                    }
-                });
+        let slot = if s.slot > 0 { trf("Xbox slot {}", &[&s.slot]) } else { dash() };
+        let shared = if s.controller != 0 && !s.exclusive { format!(" · {}", tr("shared")) } else { String::new() };
+        field(ui, tr("Connection"), |ui| {
+            ui.label(RichText::new(format!("{conn}{shared}")).size(14.0));
+        });
+        field(ui, tr("Virtual controller"), |ui| {
+            ui.label(RichText::new(slot).size(14.0));
+        });
+        field(ui, tr("Polling"), |ui| {
+            ui.label(RichText::new(if live { format!("{} Hz", s.rate) } else { dash() }).size(14.0));
+            if live {
+                ui.label(RichText::new(format!("Ø {:.2} ms · ±{:.2}", s.interval_ms, s.jitter_ms)).size(12.5).color(MUTED));
             }
         });
-        if s.error == crate::win::ERR_NO_VIGEM {
-            link(ui, tr("Get ViGEmBus (open source)"), "https://github.com/nefarius/ViGEmBus/releases");
+        field(ui, tr("New data"), |ui| {
+            ui.label(RichText::new(if live { format!("{} Hz", s.fresh) } else { dash() }).size(14.0));
+            if live {
+                ui.label(RichText::new(tr("real samples")).size(12.5).color(MUTED));
+            }
+        });
+
+        caption(ui, tr("INPUT"));
+        let mut active = !s.paused;
+        if check(ui, &mut active, tr("Bridge active")).changed() {
+            self.sh.paused.store(!active as u32, Relaxed);
         }
-
-        card(ui, |ui| controller(ui, &s));
-        stats(ui, &s);
-
-        card(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 12.0;
-            row(ui, tr("Bridge active"), tr("Passes the DualSense on to the Xbox controller"), |ui| {
-                if toggle(ui, !s.paused).clicked() {
-                    self.sh.paused.store(!s.paused as u32, Relaxed);
-                }
-            });
-            ui.add(egui::Separator::default().spacing(2.0));
-            row(ui, tr("Stick deadzone"), tr("Raise it if a stick drifts on its own"), |ui| {
-                ui.spacing_mut().slider_width = 110.0;
-                ui.label(RichText::new(format!("{:.2}", self.deadzone)).color(MUTED));
-                let r = ui.add(egui::Slider::new(&mut self.deadzone, 0.0..=0.3).show_value(false));
-                if r.changed() {
-                    self.sh.deadzone.store((self.deadzone * 1000.0) as u32, Relaxed);
-                }
-                if r.drag_stopped() || (r.changed() && !r.dragged()) {
-                    self.settings.deadzone = (self.deadzone * 1000.0) as u32;
-                    self.save();
-                }
-            });
-            if installer::is_installed() {
-                ui.add(egui::Separator::default().spacing(2.0));
-                row(ui, tr("Start with Windows"), tr("Runs quietly in the tray after login"), |ui| {
-                    if toggle(ui, self.autostart).clicked() {
-                        installer::set_autostart(!self.autostart);
-                        self.autostart = installer::autostart_enabled();
-                    }
-                });
+        field(ui, tr("Stick deadzone"), |ui| {
+            let r = slider(ui, &mut self.deadzone, 0.0, 0.3, 0.01, |v| format!("{:.0} %", v * 100.0));
+            if r.changed() {
+                self.sh.deadzone.store((self.deadzone * 1000.0).round() as u32, Relaxed);
             }
-            ui.add(egui::Separator::default().spacing(2.0));
-            row(ui, tr("Language"), "", |ui| self.language_picker(ui));
-            ui.add(egui::Separator::default().spacing(2.0));
-            let (checking, checked) = {
-                let u = self.upd.lock().unwrap();
-                (u.checking, u.checked)
-            };
-            let state = if checking {
-                tr("Checking…")
-            } else {
-                match (checked, release.is_some()) {
-                    (_, true) => tr("Update available"),
-                    (Some(true), _) => tr("Up to date"),
-                    (Some(false), _) => tr("Update check failed"),
-                    _ => tr("Only asks GitHub for the newest version number"),
-                }
-            };
-            row(ui, tr("Check for updates"), state, |ui| {
-                if toggle(ui, self.settings.check_updates).clicked() {
-                    self.settings.check_updates = !self.settings.check_updates;
-                    self.save();
-                }
-                if small_button(ui, tr("Check now")).clicked() {
-                    self.check_updates();
-                }
-            });
+            if r.drag_stopped() || (r.changed() && !r.dragged()) {
+                self.settings.deadzone = (self.deadzone * 1000.0).round() as u32;
+                self.save();
+            }
         });
-
         if s.controller != 0 && !s.exclusive {
+            ui.add_space(4.0);
             ui.label(RichText::new(tr("Another program (e.g. Steam) also reads the DualSense. Games may see double input.")).size(12.0).color(MUTED));
         }
+    }
 
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(format!("v{} · MIT · {}", env!("CARGO_PKG_VERSION"), tr("No telemetry"))).size(12.0).color(MUTED));
-            link(ui, "GitHub", updater::REPO_URL);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if small_button(ui, tr("Quit DS5 Bridge")).on_hover_text(tr("Stops the background service and removes the virtual controller")).clicked() {
-                    self.sh.quit.store(1, Relaxed);
-                    ui.ctx().send_viewport_cmd(ViewportCommand::Close);
+    fn settings_tab(&mut self, ui: &mut egui::Ui) {
+        caption(ui, tr("GENERAL"));
+        if installer::is_installed() {
+            let mut a = self.autostart;
+            if check(ui, &mut a, tr("Start with Windows")).changed() {
+                installer::set_autostart(a);
+                self.autostart = installer::autostart_enabled();
+            }
+        }
+        let mut u = self.settings.check_updates;
+        if check(ui, &mut u, tr("Check for updates")).changed() {
+            self.settings.check_updates = u;
+            self.save();
+        }
+        let mut snd = self.settings.sounds;
+        if check(ui, &mut snd, tr("Sounds")).changed() {
+            self.settings.sounds = snd;
+            sound::ON.store(snd, Relaxed);
+            sound::click();
+            self.save();
+        }
+        ui.add_space(4.0);
+        field(ui, tr("Language"), |ui| self.language_picker(ui));
+
+        caption(ui, tr("APPEARANCE"));
+        field(ui, tr("Accent"), |ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            for (name, rgb) in PRESETS {
+                let (r, resp) = ui.allocate_exact_size(vec2(24.0, 24.0), Sense::click());
+                let c = Color32::from_rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8);
+                let p = ui.painter();
+                if self.settings.accent == rgb {
+                    p.circle_stroke(r.center(), 11.5, Stroke::new(1.5, TEXT));
+                } else if resp.hovered() {
+                    p.circle_stroke(r.center(), 11.5, Stroke::new(1.0, MUTED));
                 }
-            });
+                p.circle_filled(r.center(), 8.5, c);
+                if resp.on_hover_text(name).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    sound::click();
+                    self.set_accent(ui.ctx(), rgb);
+                }
+            }
+        });
+        field(ui, tr("Custom colour"), |ui| {
+            let v = self.settings.accent;
+            let mut c = [(v >> 16) as u8, (v >> 8) as u8, v as u8];
+            if ui.color_edit_button_srgb(&mut c).changed() {
+                self.set_accent(ui.ctx(), (c[0] as u32) << 16 | (c[1] as u32) << 8 | c[2] as u32);
+            }
+            ui.label(RichText::new(format!("#{:06X}", self.settings.accent)).size(12.5).color(MUTED));
         });
     }
 
-    fn update_view(&mut self, ui: &mut egui::Ui, r: &Release) {
-        card(ui, |ui| {
-            ui.label(RichText::new(trf("Update to {}", &[&r.version])).size(20.0));
-            ui.label(RichText::new(trf("Installed: {}", &[&env!("CARGO_PKG_VERSION")])).size(12.0).color(MUTED));
-            ui.add_space(4.0);
-            ui.label(RichText::new(tr("What's new")).size(13.0).color(MUTED));
-            egui::Frame::NONE.fill(SURFACE2).corner_radius(10.0).inner_margin(12.0).show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
-                    ui.label(RichText::new(if r.notes.is_empty() { "–" } else { &r.notes }).size(13.0));
-                });
+    fn about_tab(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            let (rect, _) = ui.allocate_exact_size(vec2(44.0, 44.0), Sense::hover());
+            ui.painter().image(self.logo.id(), rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 1.0;
+                ui.label(RichText::new(APP).size(20.0));
+                ui.label(RichText::new(trf("Version {}", &[&env!("CARGO_PKG_VERSION")])).size(12.5).color(MUTED));
             });
-            ui.add_space(6.0);
-            let phase_info = {
-                let u = self.upd.lock().unwrap();
-                match &u.phase {
-                    Phase::Idle => None,
-                    Phase::Downloading => Some((self.progress.load(Relaxed) as f32 / r.size.max(1) as f32, tr("Downloading…").to_string(), RED)),
-                    Phase::Installing => Some((1.0, tr("Installing…").to_string(), RED)),
-                    Phase::Done(_) => Some((1.0, tr("Restarting…").to_string(), GREEN)),
-                    Phase::Failed(m) => Some((0.0, m.clone(), ORANGE)),
-                }
-            };
-            match phase_info {
-                None => {
-                    ui.label(RichText::new(tr("The download is checked against GitHub's SHA-256 checksum before anything is replaced.")).size(12.0).color(MUTED));
-                    if big_button(ui, tr("Update now"), RED).clicked() {
-                        self.start_update();
-                    }
-                }
-                Some((f, text, color)) => {
-                    if color != ORANGE {
-                        ui.add(egui::ProgressBar::new(f.min(1.0)).fill(color).corner_radius(6.0).desired_height(10.0));
-                    }
-                    ui.label(RichText::new(text).color(color));
-                    if color == ORANGE && small_button(ui, tr("Try again")).clicked() {
-                        self.upd.lock().unwrap().phase = Phase::Idle;
-                    }
+        });
+        ui.add_space(4.0);
+        ui.label(RichText::new(tr("Use your PS5 DualSense as an Xbox controller on Windows, over USB or Bluetooth. Runs fully offline.")).size(13.0).color(MUTED));
+        ui.label(RichText::new(tr("No account, no telemetry. Your data stays on this PC.")).size(13.0).color(MUTED));
+
+        caption(ui, tr("UPDATES"));
+        let (checking, checked, has) = {
+            let u = self.upd.lock().unwrap();
+            (u.checking, u.checked, u.release.is_some())
+        };
+        let state = if checking {
+            tr("Checking…")
+        } else {
+            match (checked, has) {
+                (_, true) => tr("Update available"),
+                (Some(true), _) => tr("Up to date"),
+                (Some(false), _) => tr("Update check failed"),
+                _ => tr("Only asks GitHub for the newest version number"),
+            }
+        };
+        ui.horizontal(|ui| {
+            if secondary(ui, tr("Check now")).clicked() {
+                self.check_updates();
+            }
+            if has && secondary(ui, tr("Show")).clicked() {
+                self.tab = Tab::Controller;
+                self.show_update = true;
+            }
+            ui.label(RichText::new(state).size(12.5).color(MUTED));
+        });
+
+        caption(ui, tr("PROJECT"));
+        ui.horizontal(|ui| {
+            link(ui, "GitHub", updater::REPO_URL);
+            ui.label(RichText::new("· MIT").size(12.5).color(MUTED));
+        });
+        ui.add_space(10.0);
+        if secondary(ui, tr("Quit DS5 Bridge")).on_hover_text(tr("Stops the background service and removes the virtual controller")).clicked() {
+            self.sh.quit.store(1, Relaxed);
+            ui.ctx().send_viewport_cmd(ViewportCommand::Close);
+        }
+    }
+
+    fn update_view(&mut self, ui: &mut egui::Ui, r: &Release) {
+        ui.label(RichText::new(trf("Update to {}", &[&r.version])).size(20.0));
+        ui.label(RichText::new(trf("Installed: {}", &[&env!("CARGO_PKG_VERSION")])).size(12.5).color(MUTED));
+        caption(ui, tr("What's new"));
+        egui::Frame::NONE.fill(SURFACE).stroke(Stroke::new(1.0, LINE)).corner_radius(10.0).inner_margin(12.0).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
+                ui.label(RichText::new(if r.notes.is_empty() { "–" } else { &r.notes }).size(13.0));
+            });
+        });
+        ui.add_space(4.0);
+        let phase_info = {
+            let u = self.upd.lock().unwrap();
+            match &u.phase {
+                Phase::Idle => None,
+                Phase::Downloading => Some((self.progress.load(Relaxed) as f32 / r.size.max(1) as f32, tr("Downloading…").to_string(), accent())),
+                Phase::Installing => Some((1.0, tr("Installing…").to_string(), accent())),
+                Phase::Done(_) => Some((1.0, tr("Restarting…").to_string(), OK)),
+                Phase::Failed(m) => Some((0.0, m.clone(), ERR)),
+            }
+        };
+        match phase_info {
+            None => {
+                ui.label(RichText::new(tr("The download is checked against GitHub's SHA-256 checksum before anything is replaced.")).size(12.0).color(MUTED));
+                if primary(ui, tr("Update now")).clicked() {
+                    self.start_update();
                 }
             }
-        });
+            Some((f, text, color)) => {
+                if color != ERR {
+                    ui.add(egui::ProgressBar::new(f.min(1.0)).fill(color).corner_radius(5.0).desired_height(8.0));
+                }
+                ui.label(RichText::new(text).color(color));
+                if color == ERR && secondary(ui, tr("Try again")).clicked() {
+                    self.upd.lock().unwrap().phase = Phase::Idle;
+                }
+            }
+        }
         let idle = matches!(self.upd.lock().unwrap().phase, Phase::Idle | Phase::Failed(_));
-        if idle && small_button(ui, tr("Back")).clicked() {
+        if idle && secondary(ui, tr("Back")).clicked() {
             self.show_update = false;
         }
     }
@@ -707,76 +987,65 @@ impl App {
     // ------------------------------------------------------- installer ---
 
     fn install_view(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(6.0);
         ui.horizontal(|ui| {
-            let (rect, _) = ui.allocate_exact_size(vec2(56.0, 56.0), Sense::hover());
+            let (rect, _) = ui.allocate_exact_size(vec2(52.0, 52.0), Sense::hover());
             ui.painter().image(self.logo.id(), rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 2.0;
                 ui.label(RichText::new(tr("Welcome to DS5 Bridge")).size(22.0));
-                ui.label(RichText::new(trf("Version {}", &[&env!("CARGO_PKG_VERSION")])).size(12.0).color(MUTED));
+                ui.label(RichText::new(trf("Version {}", &[&env!("CARGO_PKG_VERSION")])).size(12.5).color(MUTED));
             });
         });
         ui.label(RichText::new(tr("Use your PS5 DualSense as an Xbox controller on Windows, over USB or Bluetooth. Runs fully offline.")).size(13.0).color(MUTED));
 
         match &self.inst {
             Inst::Done => {
-                card(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        dot(ui, GREEN);
-                        ui.label(RichText::new(tr("Installed")).size(16.0).color(GREEN));
-                    });
-                    ui.label(RichText::new(tr("DS5 Bridge now lives in the tray (bottom right). Closing the window keeps it running.")).size(13.0).color(MUTED));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    dot(ui, OK);
+                    ui.label(RichText::new(tr("Installed")).size(16.0));
                 });
-                if big_button(ui, tr("Start DS5 Bridge"), RED).clicked() {
+                ui.label(RichText::new(tr("DS5 Bridge now lives in the tray (bottom right). Closing the window keeps it running.")).size(13.0).color(MUTED));
+                ui.add_space(8.0);
+                if primary(ui, tr("Start DS5 Bridge")).clicked() {
                     let _ = std::process::Command::new(installer::installed_exe()).spawn();
                     ui.ctx().send_viewport_cmd(ViewportCommand::Close);
                 }
                 return;
             }
             Inst::Failed(e) => {
-                ui.label(RichText::new(trf("Installation failed: {}", &[e])).color(ORANGE));
+                ui.label(RichText::new(trf("Installation failed: {}", &[e])).color(ERR));
             }
             Inst::Ready => {}
         }
 
-        card(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 12.0;
-            row(ui, tr("Language"), "", |ui| self.language_picker(ui));
-            let labels = [
-                (tr("Start menu shortcut"), ""),
-                (tr("Desktop shortcut"), ""),
-                (tr("Start with Windows"), tr("Runs quietly in the tray after login")),
-                (tr("Check for updates"), tr("Only asks GitHub for the newest version number")),
-            ];
-            for (i, (t, d)) in labels.into_iter().enumerate() {
-                ui.add(egui::Separator::default().spacing(2.0));
-                let on = self.opt[i];
-                row(ui, t, d, |ui| {
-                    if toggle(ui, on).clicked() {
-                        self.opt[i] = !on;
-                    }
-                });
-            }
-        });
+        caption(ui, tr("OPTIONS"));
+        let labels = [tr("Start menu shortcut"), tr("Desktop shortcut"), tr("Start with Windows"), tr("Check for updates")];
+        for (i, t) in labels.into_iter().enumerate() {
+            check(ui, &mut self.opt[i], t);
+        }
+        ui.add_space(4.0);
+        field(ui, tr("Language"), |ui| self.language_picker(ui));
 
+        caption(ui, tr("DRIVER"));
         ui.horizontal(|ui| {
             if self.vigem {
-                dot(ui, GREEN);
-                ui.label(RichText::new(tr("ViGEmBus driver found")).size(13.0));
+                dot(ui, OK);
+                ui.label(RichText::new(tr("ViGEmBus driver found")).size(13.5));
             } else {
-                dot(ui, ORANGE);
-                ui.label(RichText::new(tr("ViGEmBus driver missing: needed for the virtual controller")).size(13.0).color(ORANGE));
+                dot(ui, ERR);
+                ui.label(RichText::new(tr("ViGEmBus driver missing: needed for the virtual controller")).size(13.5).color(ERR));
             }
         });
         if !self.vigem {
             link(ui, tr("Get ViGEmBus (open source)"), "https://github.com/nefarius/ViGEmBus/releases");
         }
+        ui.add_space(6.0);
         ui.label(RichText::new(tr("No account, no telemetry. Your data stays on this PC.")).size(12.0).color(MUTED));
         // shown as %LOCALAPPDATA% so screenshots never contain a user name
-        ui.label(RichText::new(trf("Installs to {}", &[&r"%LOCALAPPDATA%\Programs\DS5 Bridge"])).size(11.0).color(MUTED));
-
-        if big_button(ui, tr("Install"), RED).clicked() {
+        ui.label(RichText::new(trf("Installs to {}", &[&r"%LOCALAPPDATA%\Programs\DS5 Bridge"])).size(11.5).color(MUTED));
+        ui.add_space(6.0);
+        if primary(ui, tr("Install")).clicked() {
             let o = installer::Options { start_menu: self.opt[0], desktop: self.opt[1], autostart: self.opt[2] };
             self.settings.check_updates = self.opt[3];
             self.save();
@@ -789,12 +1058,11 @@ impl App {
     }
 
     fn uninstall_view(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(8.0);
         if self.removed {
             ui.label(RichText::new(tr("DS5 Bridge was removed.")).size(20.0));
             ui.label(RichText::new(tr("Thanks for trying it.")).color(MUTED));
             ui.add_space(12.0);
-            if big_button(ui, tr("Close"), SURFACE2).clicked() {
+            if secondary(ui, tr("Close")).clicked() {
                 ui.ctx().send_viewport_cmd(ViewportCommand::Close);
             }
             return;
@@ -802,168 +1070,158 @@ impl App {
         ui.label(RichText::new(tr("Remove DS5 Bridge?")).size(20.0));
         ui.label(RichText::new(tr("This removes the app, its shortcuts and its settings.")).color(MUTED));
         ui.add_space(12.0);
-        if big_button(ui, tr("Remove"), RED).clicked() {
+        if primary(ui, tr("Remove")).clicked() {
             installer::uninstall();
             self.removed = true;
         }
     }
 }
 
-fn stats(ui: &mut egui::Ui, s: &Status) {
-    let live = s.rate > 0;
-    let dash = || "–".to_string();
-    let conn = match s.controller {
-        1 => "USB".to_string(),
-        2 => "Bluetooth".to_string(),
-        _ => dash(),
-    };
-    let items = [
-        (
-            tr("CONNECTION"),
-            conn,
-            if s.slot > 0 { format!("{}{}", trf("Xbox slot {}", &[&s.slot]), if s.controller != 0 && !s.exclusive { format!(" · {}", tr("shared")) } else { String::new() }) } else { String::new() },
-        ),
-        (tr("POLLING"), if live { format!("{} Hz", s.rate) } else { dash() }, if live { format!("Ø {:.2} ms · ±{:.2}", s.interval_ms, s.jitter_ms) } else { String::new() }),
-        (tr("NEW DATA"), if live { format!("{} Hz", s.fresh) } else { dash() }, if live { tr("real samples").to_string() } else { String::new() }),
-    ];
-    ui.columns(3, |cols| {
-        for (col, (label, value, sub)) in cols.iter_mut().zip(items) {
-            card(col, |ui| {
-                ui.spacing_mut().item_spacing.y = 3.0;
-                ui.label(RichText::new(label).size(10.5).color(MUTED));
-                ui.label(RichText::new(value).size(18.0));
-                ui.add(egui::Label::new(RichText::new(sub).size(10.5).color(MUTED)).truncate());
-            });
-        }
-    });
-}
-
 // --------------------------------------------------------- controller ---
 
-/// A white/red DualShock-style controller drawn on a 420 x 270 grid, scaled to the width.
-/// Everything lights up live with the real controller.
-fn controller(ui: &mut egui::Ui, s: &Status) {
-    let full_w = ui.available_width();
-    let w = full_w.min(560.0).min(if full_w < 500.0 { 390.0 } else { 560.0 }); // compact inside the window
-    let k = w / 420.0;
-    let (resp, p) = ui.allocate_painter(vec2(full_w, 268.0 * k), Sense::hover());
-    let o = resp.rect.min + vec2((full_w - w) / 2.0, 0.0);
+/// Line-art DualSense on a 420 x 270 grid, fitted into `area`. Quiet outlines; whatever is
+/// pressed fills with the accent, sticks draw a line from their centre.
+fn controller(p: &Painter, area: Rect, s: &Status) {
+    let k = (area.width() / 430.0).min(area.height() / 280.0);
+    let o = area.center() - vec2(210.0, 132.0) * k;
     let at = |x: f32, y: f32| -> Pos2 { o + vec2(x, y) * k };
     let r = |x0: f32, y0: f32, x1: f32, y1: f32| Rect::from_min_max(at(x0, y0), at(x1, y1));
     let on = |bit: u16| s.pad.buttons & bit != 0;
     let font = |size: f32| FontId::proportional(size * k);
     let live = s.controller != 0;
+    let acc = accent();
+    let ink = on_accent(acc);
+    let line = TEXT.gamma_multiply(if live { 0.5 } else { 0.28 });
+    let sw = (1.3 * k).max(1.0);
+    let st = Stroke::new(sw, line);
+    let hot = Stroke::new(sw, acc);
+    let body = Color32::from_rgb(27, 27, 31);
+    let well = Color32::from_rgb(17, 17, 19);
+    let pick = |pressed: bool| if pressed { (acc, hot) } else { (well, st) };
 
-    // soft glow behind the controller while connected
-    if live {
-        for (i, a) in [(0, 0.05), (1, 0.03), (2, 0.018)] {
-            p.circle_filled(at(210.0, 150.0), (118.0 + i as f32 * 26.0) * k, RED.gamma_multiply(a));
+    // body: the union drawn a stroke wider in the line colour, then filled, gives one clean outline
+    let shape = |grow: f32, c: Color32| {
+        for x in [100.0, 320.0] {
+            p.circle_filled(at(x, 186.0), 60.0 * k + grow, c);
         }
-    }
+        for x in [96.0, 324.0] {
+            p.circle_filled(at(x, 204.0), 54.0 * k + grow, c); // grip ends
+        }
+        p.rect_filled(r(52.0, 54.0, 368.0, 196.0).expand(grow), 50.0 * k + grow, c);
+    };
+    shape(sw, line);
+    shape(0.0, body);
 
-    // triggers L2/R2: red, fill rises with pressure
+    // triggers: fill rises with pressure
     for (x0, v, name) in [(92.0, s.pad.lt, "L2"), (270.0, s.pad.rt, "R2")] {
         let t = r(x0, 2.0, x0 + 58.0, 40.0);
-        p.rect_filled(t, CornerRadius { nw: (22.0 * k) as u8, ne: (22.0 * k) as u8, sw: 0, se: 0 }, RED_DARK);
+        let cr = CornerRadius { nw: (18.0 * k) as u8, ne: (18.0 * k) as u8, sw: 0, se: 0 };
+        p.rect_filled(t, cr, body);
         if v > 0 {
             let h = t.height() * v as f32 / 255.0;
-            let fill = Rect::from_min_max(pos2(t.left(), t.bottom() - h), t.max);
-            p.rect_filled(fill, CornerRadius { nw: (22.0 * k) as u8, ne: (22.0 * k) as u8, sw: 0, se: 0 }, RED_LIGHT);
+            p.rect_filled(Rect::from_min_max(pos2(t.left(), t.bottom() - h), t.max), if h > 18.0 * k { cr } else { CornerRadius::ZERO }, acc.gamma_multiply(0.9));
         }
-        p.text(at(x0 + 29.0, 18.0), Align2::CENTER_CENTER, name, font(10.0), WHITE);
+        p.rect_stroke(t, cr, if v > 0 { hot } else { st }, StrokeKind::Inside);
+        p.text(at(x0 + 29.0, 22.0), Align2::CENTER_CENTER, name, font(10.0), if v > 140 { ink } else { MUTED });
     }
-    // bumpers L1/R1
+    // bumpers
     for (x0, bit, name) in [(84.0, LB, "L1"), (266.0, RB, "R1")] {
-        let b = r(x0, 38.0, x0 + 70.0, 53.0);
-        p.rect_filled(b, 7.0 * k, if on(bit) { WHITE } else { RED });
-        if on(bit) {
-            p.rect_stroke(b, 7.0 * k, Stroke::new(2.0 * k, RED), StrokeKind::Inside);
-        }
-        p.text(b.center(), Align2::CENTER_CENTER, name, font(9.0), if on(bit) { RED } else { WHITE });
+        let b = r(x0, 40.0, x0 + 70.0, 54.0);
+        let (fill, stroke) = if on(bit) { (acc, hot) } else { (body, st) };
+        p.rect_filled(b, 6.0 * k, fill);
+        p.rect_stroke(b, 6.0 * k, stroke, StrokeKind::Inside);
+        p.text(b.center(), Align2::CENTER_CENTER, name, font(8.5), if on(bit) { ink } else { MUTED });
     }
 
-    // grips with red tips, then the white body over them
-    for x in [96.0, 324.0] {
-        p.circle_filled(at(x, 214.0), 48.0 * k, RED);
-    }
-    for x in [100.0, 320.0] {
-        p.circle_filled(at(x, 186.0), 60.0 * k, WHITE);
-    }
-    p.rect_filled(r(52.0, 54.0, 368.0, 196.0), 50.0 * k, WHITE);
-    // subtle shading line where the grips meet the body
-    p.line_segment([at(150.0, 196.0), at(270.0, 196.0)], Stroke::new(1.0 * k, SHADE));
-
-    // touchpad (red), light bar edges while connected
-    let pad = r(150.0, 60.0, 270.0, 116.0);
-    p.rect_filled(pad, 9.0 * k, RED);
+    // touchpad with light bars while connected
+    let pad = r(150.0, 62.0, 270.0, 118.0);
+    p.rect_filled(pad, 9.0 * k, well);
+    p.rect_stroke(pad, 9.0 * k, st, StrokeKind::Inside);
     if live {
-        for x in [pad.left() - 4.0 * k, pad.right() + 4.0 * k] {
-            p.line_segment([pos2(x, pad.top() + 6.0 * k), pos2(x, pad.bottom() - 6.0 * k)], Stroke::new(2.5 * k, RED_LIGHT));
+        for x in [pad.left() - 5.0 * k, pad.right() + 5.0 * k] {
+            p.line_segment([pos2(x, pad.top() + 8.0 * k), pos2(x, pad.bottom() - 8.0 * k)], Stroke::new(2.0 * k, acc.gamma_multiply(0.8)));
         }
     }
     // create / options
     for (x, bit) in [(136.0, BACK), (284.0, START)] {
-        let b = Rect::from_center_size(at(x, 70.0), vec2(8.0, 18.0) * k);
-        p.rect_filled(b, 4.0 * k, if on(bit) { RED } else { INK2 });
+        let b = Rect::from_center_size(at(x, 72.0), vec2(7.0, 16.0) * k);
+        let (fill, stroke) = pick(on(bit));
+        p.rect_filled(b, 3.5 * k, fill);
+        p.rect_stroke(b, 3.5 * k, stroke, StrokeKind::Inside);
     }
 
-    // d-pad: black well, red cross
-    let dc = at(104.0, 110.0);
-    p.circle_filled(dc, 34.0 * k, INK);
+    // d-pad
+    let dc = at(104.0, 112.0);
     for (dx, dy, bit) in [(0.0, -1.0, UP), (0.0, 1.0, DOWN), (-1.0, 0.0, LEFT), (1.0, 0.0, RIGHT)] {
         let c = dc + vec2(dx, dy) * 17.0 * k;
-        let size = if dx == 0.0 { vec2(14.0, 18.0) } else { vec2(18.0, 14.0) } * k;
-        p.rect_filled(Rect::from_center_size(c, size), 3.0 * k, if on(bit) { WHITE } else { RED });
+        let size = if dx == 0.0 { vec2(14.0, 19.0) } else { vec2(19.0, 14.0) } * k;
+        let (fill, stroke) = pick(on(bit));
+        p.rect_filled(Rect::from_center_size(c, size), 3.5 * k, fill);
+        p.rect_stroke(Rect::from_center_size(c, size), 3.5 * k, stroke, StrokeKind::Inside);
     }
-    p.rect_filled(Rect::from_center_size(dc, vec2(14.0, 14.0) * k), 2.0 * k, RED_DARK);
 
-    // face buttons: black well, light buttons with coloured symbols
-    let fc = at(316.0, 110.0);
-    p.circle_filled(fc, 38.0 * k, INK);
+    // face buttons with thin monochrome symbols
+    let fc = at(316.0, 112.0);
     for (i, (dx, dy, bit)) in [(0.0, -1.0, Y), (1.0, 0.0, B), (0.0, 1.0, A), (-1.0, 0.0, X)].into_iter().enumerate() {
         let c = fc + vec2(dx, dy) * 21.0 * k;
-        let pressed = on(bit);
-        p.circle_filled(c, 11.5 * k, if pressed { SYM[i] } else { WHITE });
-        let st = Stroke::new(1.7 * k, if pressed { Color32::WHITE } else { SYM[i] });
-        let m = 5.0 * k;
+        let (fill, stroke) = pick(on(bit));
+        p.circle_filled(c, 11.0 * k, fill);
+        p.circle_stroke(c, 11.0 * k, stroke);
+        let sym = Stroke::new((1.1 * k).max(0.9), if on(bit) { ink } else { TEXT.gamma_multiply(if live { 0.7 } else { 0.4 }) });
+        let m = 4.6 * k;
         match i {
             0 => {
-                p.add(Shape::closed_line(vec![c + vec2(0.0, -m), c + vec2(m * 0.95, m * 0.7), c + vec2(-m * 0.95, m * 0.7)], st));
+                p.add(Shape::closed_line(vec![c + vec2(0.0, -m), c + vec2(m * 0.95, m * 0.7), c + vec2(-m * 0.95, m * 0.7)], sym));
             }
             1 => {
-                p.circle_stroke(c, m, st);
+                p.circle_stroke(c, m, sym);
             }
             2 => {
-                p.line_segment([c + vec2(-m, -m) * 0.8, c + vec2(m, m) * 0.8], st);
-                p.line_segment([c + vec2(-m, m) * 0.8, c + vec2(m, -m) * 0.8], st);
+                p.line_segment([c + vec2(-m, -m) * 0.8, c + vec2(m, m) * 0.8], sym);
+                p.line_segment([c + vec2(-m, m) * 0.8, c + vec2(m, -m) * 0.8], sym);
             }
             _ => {
-                p.rect_stroke(Rect::from_center_size(c, vec2(m, m) * 1.6), 1.0, st, StrokeKind::Middle);
+                p.rect_stroke(Rect::from_center_size(c, vec2(m, m) * 1.6), 1.0, sym, StrokeKind::Middle);
             }
         }
     }
 
-    // speaker grille + PS button
-    for row in 0..3 {
-        for col in 0..(5 - row % 2) {
-            let x = 210.0 - (4 - row % 2) as f32 * 3.5 + col as f32 * 7.0;
-            p.circle_filled(at(x, 128.0 + row as f32 * 5.0), 1.3 * k, INK2);
+    // PS button
+    let ps = at(210.0, 152.0);
+    let (fill, stroke) = pick(on(GUIDE));
+    p.circle_filled(ps, 9.0 * k, fill);
+    p.circle_stroke(ps, 9.0 * k, stroke);
+
+    // sticks: a line from the centre to the cap shows where the stick points
+    for (x, sx, sy, bit) in [(162.0, s.pad.lx, s.pad.ly, LS), (258.0, s.pad.rx, s.pad.ry, RS)] {
+        let c = at(x, 168.0);
+        p.circle_filled(c, 26.0 * k, well);
+        p.circle_stroke(c, 26.0 * k, st);
+        let d = c + vec2(sx, -sy) * 11.0 * k;
+        let moved = sx != 0.0 || sy != 0.0;
+        p.circle_filled(d, 16.0 * k, if on(bit) { acc } else { body });
+        p.circle_stroke(d, 16.0 * k, if moved || on(bit) { hot } else { st });
+        p.circle_stroke(d, 10.0 * k, Stroke::new(sw * 0.8, if on(bit) { ink.gamma_multiply(0.5) } else { line.gamma_multiply(0.6) }));
+        if moved {
+            p.line_segment([c, d], Stroke::new(1.6 * k, acc));
+            p.circle_filled(c, 2.2 * k, acc);
         }
     }
-    let ps = at(210.0, 160.0);
-    p.circle_filled(ps, 11.0 * k, if on(GUIDE) { RED } else { INK });
-    p.text(ps, Align2::CENTER_CENTER, "PS", font(8.0), WHITE);
+}
 
-    // sticks: grey ring, red cap that follows the stick, white ring on L3/R3
-    for (x, sx, sy, bit) in [(162.0, s.pad.lx, s.pad.ly, LS), (258.0, s.pad.rx, s.pad.ry, RS)] {
-        let c = at(x, 162.0);
-        p.circle_filled(c, 27.0 * k, SHADE);
-        p.circle_filled(c, 23.0 * k, INK2);
-        let d = c + vec2(sx, -sy) * 9.0 * k;
-        p.circle_filled(d, 18.0 * k, if on(bit) { RED_LIGHT } else { RED });
-        p.circle_filled(d, 11.0 * k, if on(bit) { RED } else { RED_DARK.gamma_multiply(0.6) });
-        if on(bit) || sx != 0.0 || sy != 0.0 {
-            p.circle_stroke(d, 18.0 * k, Stroke::new(2.0 * k, WHITE));
-        }
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn click_wav_is_valid() {
+        let w = super::sound::wav(2000.0, 10.0, 0.1);
+        assert_eq!(&w[..4], b"RIFF");
+        assert_eq!(&w[8..16], b"WAVEfmt ");
+        let n = 441; // 10 ms at 44.1 kHz
+        assert_eq!(w.len(), 44 + n * 2);
+        assert_eq!(u32::from_le_bytes(w[4..8].try_into().unwrap()) as usize, 36 + n * 2);
+        assert_eq!(u32::from_le_bytes(w[40..44].try_into().unwrap()) as usize, n * 2);
+        // quiet: no sample anywhere near full scale
+        let peak = w[44..].chunks(2).map(|c| i16::from_le_bytes([c[0], c[1]]).unsigned_abs()).max().unwrap();
+        assert!(peak > 100 && peak < 6000, "peak {peak}");
     }
 }

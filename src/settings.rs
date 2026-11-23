@@ -4,15 +4,17 @@ use std::path::PathBuf;
 
 #[derive(Clone, PartialEq)]
 pub struct Settings {
-    pub lang: Option<String>, // None = follow Windows
+    pub lang: Option<String>, // None = English
     pub deadzone: u32,        // per mille
     pub check_updates: bool,
     pub last_check: u64,      // unix seconds
+    pub accent: u32,          // 0xRRGGBB
+    pub sounds: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { lang: None, deadzone: 80, check_updates: true, last_check: 0 }
+        Settings { lang: None, deadzone: 80, check_updates: true, last_check: 0, accent: 0xC9B37E, sounds: true }
     }
 }
 
@@ -35,6 +37,8 @@ pub fn load() -> Settings {
             "deadzone" => s.deadzone = v.parse().unwrap_or(s.deadzone).min(300),
             "check_updates" => s.check_updates = v != "0",
             "last_check" => s.last_check = v.parse().unwrap_or(0),
+            "accent" => s.accent = u32::from_str_radix(v, 16).unwrap_or(s.accent) & 0xFF_FFFF,
+            "sounds" => s.sounds = v != "0",
             _ => {}
         }
     }
@@ -43,11 +47,13 @@ pub fn load() -> Settings {
 
 pub fn save(s: &Settings) {
     let text = format!(
-        "lang={}\ndeadzone={}\ncheck_updates={}\nlast_check={}\n",
+        "lang={}\ndeadzone={}\ncheck_updates={}\nlast_check={}\naccent={:06x}\nsounds={}\n",
         s.lang.as_deref().unwrap_or(""),
         s.deadzone,
         s.check_updates as u8,
-        s.last_check
+        s.last_check,
+        s.accent,
+        s.sounds as u8
     );
     let _ = std::fs::create_dir_all(dir());
     let _ = std::fs::write(file(), text);

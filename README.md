@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/aywalh/ds5bridge/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/aywalh/ds5bridge?color=e3262e"></a>
+  <a href="https://github.com/aywalh/ds5bridge/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/aywalh/ds5bridge?color=c9b37e"></a>
   <img alt="Windows 10/11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-1f1f26">
   <img alt="MIT license" src="https://img.shields.io/badge/license-MIT-1f1f26">
   <img alt="No telemetry" src="https://img.shields.io/badge/telemetry-none-1f1f26">
@@ -21,7 +21,8 @@ It is small, fast and private: one 5 MB exe, written in Rust, no account, no tel
   at about **2–3 MB of RAM** and **well under 1 % CPU**.
 - **Live view.** A drawn controller that lights up with every button, stick and trigger,
   plus measured polling rate, latency jitter and how many reports really carry new data.
-- **Stick deadzone** slider against drift.
+- **Stick deadzone** slider against drift, with soft detent clicks you can turn off.
+- **Your colours:** six calm accent presets (Champagne, Sage, Slate, Rosé, Bronze, Ivory) or any colour you like.
 - **Installer, updater and uninstaller** built in, per user, no admin rights.
 - **Updates you can trust:** a new version is only installed if its SHA-256 matches the checksum
   published on GitHub.

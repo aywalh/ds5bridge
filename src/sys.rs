@@ -194,6 +194,11 @@ extern "system" {
     pub fn RegGetValueW(key: isize, sub: *const u16, value: *const u16, flags: u32, typ: *mut u32, data: *mut c_void, len: *mut u32) -> i32;
 }
 
+#[link(name = "winmm")]
+extern "system" {
+    pub fn PlaySoundW(sound: *const u8, module: isize, flags: u32) -> i32;
+}
+
 #[link(name = "bcrypt")]
 extern "system" {
     pub fn BCryptOpenAlgorithmProvider(h: *mut isize, alg: *const u16, imp: *const u16, flags: u32) -> i32;
