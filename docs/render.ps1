@@ -1,4 +1,4 @@
-# Re-draws the README images from the app itself (demo values, no screen capture).
+﻿# Re-draws the README images from the app itself (demo values, no screen capture).
 # Usage:  cargo build --release; powershell -ExecutionPolicy Bypass -File docs\render.ps1
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
@@ -7,6 +7,7 @@ $exe = Join-Path $target 'release\ds5bridge.exe'
 $jobs = @(
     @('banner', 'en', 'banner'),
     @('main', 'en', 'screenshot-main'),
+    @('main', 'en', 'screenshot-xbox'),
     @('install', 'en', 'screenshot-install'),
     @('main', 'de', 'screenshot-main-de'),
     @('main', 'ja', 'screenshot-main-ja')

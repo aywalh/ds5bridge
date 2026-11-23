@@ -68,6 +68,7 @@
  "Thanks for trying it.": "Danke fürs Ausprobieren.",
  "The background service is not running": "Der Hintergrunddienst läuft nicht",
  "The download is checked against GitHub's SHA-256 checksum before anything is replaced.": "Der Download wird mit der SHA-256-Prüfsumme von GitHub verglichen, bevor etwas ersetzt wird.",
+ "This is what games see.": "So sehen Spiele den Controller.",
  "This removes the app, its shortcuts and its settings.": "Das entfernt die App, ihre Verknüpfungen und ihre Einstellungen.",
  "Try again": "Erneut versuchen",
  "UPDATES": "UPDATES",

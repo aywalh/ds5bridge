@@ -68,6 +68,7 @@
  "Thanks for trying it.": "お試しいただきありがとうございました。",
  "The background service is not running": "バックグラウンドサービスが動いていません",
  "The download is checked against GitHub's SHA-256 checksum before anything is replaced.": "置き換える前に、ダウンロードを GitHub の SHA-256 チェックサムで確認します。",
+ "This is what games see.": "ゲームからはこう見えます。",
  "This removes the app, its shortcuts and its settings.": "アプリ、ショートカット、設定を削除します。",
  "Try again": "再試行",
  "UPDATES": "アップデート",

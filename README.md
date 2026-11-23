@@ -19,7 +19,8 @@ It is small, fast and private: one 5 MB exe, written in Rust, no account, no tel
 - **USB and Bluetooth.** Over Bluetooth it switches the DualSense to its full report mode.
 - **Lives in the tray.** Closing the window keeps the bridge running in the background
   at about **2–3 MB of RAM** and **well under 1 % CPU**.
-- **Live view.** A drawn controller that lights up with every button, stick and trigger,
+- **Live view.** A drawn DualSense (or, one click away, the Xbox controller games see) that lights
+  up with every button, stick and trigger,
   plus measured polling rate, latency jitter and how many reports really carry new data.
 - **Stick deadzone** slider against drift, with soft detent clicks you can turn off.
 - **Your colours:** six calm accent presets (Champagne, Sage, Slate, Rosé, Bronze, Ivory) or any colour you like.
@@ -33,7 +34,7 @@ It is small, fast and private: one 5 MB exe, written in Rust, no account, no tel
 <p align="center">
   <img src="docs/screenshot-main.png" alt="Main window" width="32%">
   <img src="docs/screenshot-install.png" alt="Installer" width="32%">
-  <img src="docs/screenshot-main-ja.png" alt="Main window in Japanese" width="32%">
+  <img src="docs/screenshot-xbox.png" alt="Xbox view: what games see" width="32%">
 </p>
 
 ## Install

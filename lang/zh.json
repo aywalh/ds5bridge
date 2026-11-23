@@ -68,6 +68,7 @@
  "Thanks for trying it.": "感谢试用。",
  "The background service is not running": "后台服务未运行",
  "The download is checked against GitHub's SHA-256 checksum before anything is replaced.": "替换之前，会用 GitHub 的 SHA-256 校验和验证下载文件。",
+ "This is what games see.": "游戏看到的就是这样。",
  "This removes the app, its shortcuts and its settings.": "这将移除应用、快捷方式和设置。",
  "Try again": "重试",
  "UPDATES": "更新",

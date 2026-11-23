@@ -185,6 +185,10 @@ fn launch(mode: Mode, render_to: Option<std::path::PathBuf>) {
             if render_to.is_some() {
                 app.demo = Some(demo_status());
                 app.vigem = true;
+                // a file name with "xbox" in it shows the Xbox view (README screenshot)
+                if render_to.as_ref().is_some_and(|p| p.to_string_lossy().contains("xbox")) {
+                    app.skin = Skin::Xbox;
+                }
                 app.render_to = render_to;
                 sound::ON.store(false, Relaxed);
             }
@@ -267,6 +271,7 @@ enum Inst {
 struct App {
     mode: Mode,
     tab: Tab,
+    skin: Skin,
     sh: &'static Shared,
     settings: Settings,
     deadzone: f32,
@@ -314,6 +319,7 @@ impl App {
         let app = App {
             mode,
             tab: Tab::Controller,
+            skin: Skin::DualSense,
             sh: ipc::open(),
             deadzone: settings.deadzone as f32 / 1000.0,
             autostart: installer::autostart_enabled(),
@@ -509,7 +515,7 @@ impl App {
         let panel = Rect::from_min_size(pos2(full.right() - 620.0, 110.0), vec2(540.0, 420.0));
         p.rect(panel, 14.0, SURFACE, Stroke::new(1.0, LINE), StrokeKind::Inside);
         p.text(panel.min + vec2(0.0, -26.0), Align2::LEFT_TOP, "LIVE PREVIEW", FontId::proportional(13.0), MUTED);
-        controller(&p, panel.shrink(30.0), &self.demo.clone().unwrap_or_default());
+        controller(&p, panel.shrink(30.0), &self.demo.clone().unwrap_or_default(), Skin::DualSense);
     }
 }
 
@@ -699,11 +705,34 @@ impl App {
 
         // live preview
         let p = ui.painter().clone();
-        p.text(right.min, Align2::LEFT_TOP, tr("LIVE PREVIEW"), FontId::proportional(11.5), MUTED);
+        p.text(right.min + vec2(0.0, 3.0), Align2::LEFT_TOP, tr("LIVE PREVIEW"), FontId::proportional(11.5), MUTED);
+        // DualSense = what you hold, Xbox = what games see
+        let mut x = right.right();
+        for (skin, name) in [(Skin::Xbox, "Xbox"), (Skin::DualSense, "DualSense")] {
+            let g = p.layout_no_wrap(name.to_string(), FontId::proportional(12.0), TEXT);
+            let r = Rect::from_min_max(pos2(x - g.size().x - 18.0, right.top()), pos2(x, right.top() + 20.0));
+            let resp = ui.interact(r, ui.scope_id().with(("skin", name)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+            if resp.clicked() && self.skin != skin {
+                self.skin = skin;
+                sound::click();
+            }
+            let active = self.skin == skin;
+            if active {
+                p.rect_filled(r, 6.0, SURFACE2);
+            }
+            p.galley(r.center() - g.size() / 2.0, g, if active || resp.hovered() { TEXT } else { MUTED });
+            x = r.left() - 4.0;
+        }
         let panel = Rect::from_min_max(right.min + vec2(0.0, 24.0), right.max - vec2(0.0, 26.0));
         p.rect(panel, 12.0, SURFACE, Stroke::new(1.0, LINE), StrokeKind::Inside);
-        controller(&p, panel.shrink(8.0), &s);
-        let hint = if s.controller == 0 { tr("Connect a DualSense to see it here.") } else { tr("Press any button to test it.") };
+        controller(&p, panel.shrink(10.0), &s, self.skin);
+        let hint = if s.controller == 0 {
+            tr("Connect a DualSense to see it here.")
+        } else if self.skin == Skin::Xbox {
+            tr("This is what games see.")
+        } else {
+            tr("Press any button to test it.")
+        };
         p.text(pos2(right.left(), right.bottom() - 2.0), Align2::LEFT_BOTTOM, hint, FontId::proportional(12.5), MUTED);
 
         // footer
@@ -1078,139 +1107,390 @@ impl App {
 }
 
 // --------------------------------------------------------- controller ---
+//
+// Both controllers are drawn in code on a 420 x 280 grid (no images from anyone else): the
+// outline is a mirrored chain of curves, filled with a triangulated mesh, then traced with a thin line.
 
-/// Line-art DualSense on a 420 x 270 grid, fitted into `area`. Quiet outlines; whatever is
-/// pressed fills with the accent, sticks draw a line from their centre.
-fn controller(p: &Painter, area: Rect, s: &Status) {
-    let k = (area.width() / 430.0).min(area.height() / 280.0);
-    let o = area.center() - vec2(210.0, 132.0) * k;
-    let at = |x: f32, y: f32| -> Pos2 { o + vec2(x, y) * k };
-    let r = |x0: f32, y0: f32, x1: f32, y1: f32| Rect::from_min_max(at(x0, y0), at(x1, y1));
-    let on = |bit: u16| s.pad.buttons & bit != 0;
-    let font = |size: f32| FontId::proportional(size * k);
-    let live = s.controller != 0;
-    let acc = accent();
-    let ink = on_accent(acc);
-    let line = TEXT.gamma_multiply(if live { 0.5 } else { 0.28 });
-    let sw = (1.3 * k).max(1.0);
-    let st = Stroke::new(sw, line);
-    let hot = Stroke::new(sw, acc);
-    let body = Color32::from_rgb(27, 27, 31);
-    let well = Color32::from_rgb(17, 17, 19);
-    let pick = |pressed: bool| if pressed { (acc, hot) } else { (well, st) };
+#[derive(Clone, Copy, PartialEq)]
+pub enum Skin {
+    DualSense,
+    Xbox,
+}
 
-    // body: the union drawn a stroke wider in the line colour, then filled, gives one clean outline
-    let shape = |grow: f32, c: Color32| {
-        for x in [100.0, 320.0] {
-            p.circle_filled(at(x, 186.0), 60.0 * k + grow, c);
+type Pt = (f32, f32);
+
+/// Points along a cubic curve from `a` (excluded) to `d`.
+fn cubic(out: &mut Vec<Pt>, a: Pt, b: Pt, c: Pt, d: Pt) {
+    for i in 1..=12 {
+        let t = i as f32 / 12.0;
+        let u = 1.0 - t;
+        let f = |a: f32, b: f32, c: f32, d: f32| u * u * u * a + 3.0 * u * u * t * b + 3.0 * u * t * t * c + t * t * t * d;
+        out.push((f(a.0, b.0, c.0, d.0), f(a.1, b.1, c.1, d.1)));
+    }
+}
+
+/// Left half from the top centre down to the bottom centre as curves [control, control, end];
+/// returns the whole outline, the right half mirrored.
+fn mirrored(start: Pt, segs: &[[Pt; 3]]) -> Vec<Pt> {
+    let mut l = vec![start];
+    for s in segs {
+        let cur = *l.last().unwrap();
+        cubic(&mut l, cur, s[0], s[1], s[2]);
+    }
+    let n = l.len();
+    let mut full = l.clone();
+    full.extend(l[1..n - 1].iter().rev().map(|&(x, y)| (420.0 - x, y)));
+    full
+}
+
+/// Ear clipping: triangle indices for a simple (non-self-intersecting) polygon.
+fn triangulate(pts: &[Pt]) -> Vec<u32> {
+    let cross = |a: Pt, b: Pt, c: Pt| (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0);
+    let area: f32 = (0..pts.len()).map(|i| cross((0.0, 0.0), pts[i], pts[(i + 1) % pts.len()])).sum();
+    let s = area.signum();
+    let mut idx: Vec<usize> = (0..pts.len()).collect();
+    let mut tris = vec![];
+    while idx.len() > 3 {
+        let n = idx.len();
+        let tri = |i: usize| (idx[(i + n - 1) % n], idx[i], idx[(i + 1) % n]);
+        let ear = (0..n).find(|&i| {
+            let (a, b, c) = tri(i);
+            let (a, b, c) = (pts[a], pts[b], pts[c]);
+            cross(a, b, c) * s > 1e-6
+                && !idx.iter().any(|&j| {
+                    let q = pts[j];
+                    q != a && q != b && q != c && cross(a, b, q) * s >= 0.0 && cross(b, c, q) * s >= 0.0 && cross(c, a, q) * s >= 0.0
+                })
+        });
+        match ear {
+            Some(i) => {
+                let (a, b, c) = tri(i);
+                tris.extend([a as u32, b as u32, c as u32]);
+                idx.remove(i);
+            }
+            // only straight (collinear) points left to drop
+            None => match (0..n).find(|&i| cross(pts[tri(i).0], pts[tri(i).1], pts[tri(i).2]).abs() <= 1e-6) {
+                Some(i) => {
+                    idx.remove(i);
+                }
+                None => break,
+            },
         }
-        for x in [96.0, 324.0] {
-            p.circle_filled(at(x, 204.0), 54.0 * k + grow, c); // grip ends
-        }
-        p.rect_filled(r(52.0, 54.0, 368.0, 196.0).expand(grow), 50.0 * k + grow, c);
-    };
-    shape(sw, line);
-    shape(0.0, body);
+    }
+    if idx.len() == 3 {
+        tris.extend(idx.iter().map(|&v| v as u32));
+    }
+    tris
+}
 
-    // triggers: fill rises with pressure
-    for (x0, v, name) in [(92.0, s.pad.lt, "L2"), (270.0, s.pad.rt, "R2")] {
-        let t = r(x0, 2.0, x0 + 58.0, 40.0);
-        let cr = CornerRadius { nw: (18.0 * k) as u8, ne: (18.0 * k) as u8, sw: 0, se: 0 };
-        p.rect_filled(t, cr, body);
+struct Shell {
+    body: Vec<Pt>,
+    body_t: Vec<u32>,
+    plate: Vec<Pt>, // darker centre part (DualSense two-tone), may be empty
+    plate_t: Vec<u32>,
+}
+
+fn ds5_body() -> Vec<Pt> {
+    mirrored(
+        (210.0, 56.0),
+        &[
+            [(190.0, 56.0), (170.0, 56.0), (152.0, 56.0)],
+            [(128.0, 56.0), (116.0, 46.0), (92.0, 46.0)],
+            [(64.0, 46.0), (50.0, 58.0), (44.0, 80.0)],
+            [(34.0, 118.0), (22.0, 170.0), (20.0, 206.0)],
+            [(18.0, 248.0), (40.0, 270.0), (68.0, 270.0)],
+            [(96.0, 270.0), (108.0, 250.0), (118.0, 228.0)],
+            [(132.0, 200.0), (160.0, 196.0), (210.0, 196.0)],
+        ],
+    )
+}
+
+fn shell(skin: Skin) -> &'static Shell {
+    static DS: std::sync::OnceLock<Shell> = std::sync::OnceLock::new();
+    static XB: std::sync::OnceLock<Shell> = std::sync::OnceLock::new();
+    let make = |body: Vec<Pt>, plate: Vec<Pt>| Shell { body_t: triangulate(&body), plate_t: triangulate(&plate), body, plate };
+    match skin {
+        Skin::DualSense => DS.get_or_init(|| {
+            // the black centre: from beside the touchpad down around the sticks to the arch
+            let plate = mirrored(
+                (210.0, 56.0),
+                &[
+                    [(190.0, 56.0), (166.0, 56.0), (148.0, 56.0)],
+                    [(140.0, 120.0), (114.0, 160.0), (118.0, 228.0)],
+                    [(132.0, 200.0), (160.0, 196.0), (210.0, 196.0)],
+                ],
+            );
+            make(ds5_body(), plate)
+        }),
+        Skin::Xbox => XB.get_or_init(|| {
+            let body = mirrored(
+                (210.0, 64.0),
+                &[
+                    [(184.0, 64.0), (164.0, 50.0), (124.0, 48.0)],
+                    [(84.0, 46.0), (58.0, 56.0), (46.0, 82.0)],
+                    [(32.0, 120.0), (16.0, 182.0), (22.0, 222.0)],
+                    [(28.0, 262.0), (64.0, 272.0), (86.0, 254.0)],
+                    [(108.0, 236.0), (128.0, 210.0), (162.0, 206.0)],
+                    [(184.0, 204.0), (196.0, 206.0), (210.0, 206.0)],
+                ],
+            );
+            make(body, vec![])
+        }),
+    }
+}
+
+const WING: Color32 = Color32::from_rgb(36, 36, 40);
+const PLATE: Color32 = Color32::from_rgb(23, 23, 26);
+const WELL: Color32 = Color32::from_rgb(15, 15, 17);
+
+/// Everything a part needs to draw itself.
+struct Pen<'a> {
+    p: &'a Painter,
+    o: Pos2,
+    k: f32,
+    s: &'a Status,
+    acc: Color32,
+    ink: Color32,
+    line: Color32,
+    st: Stroke,
+    hot: Stroke,
+    live: bool,
+}
+
+impl Pen<'_> {
+    fn at(&self, x: f32, y: f32) -> Pos2 {
+        self.o + vec2(x, y) * self.k
+    }
+    fn on(&self, bit: u16) -> bool {
+        self.s.pad.buttons & bit != 0
+    }
+    fn pick(&self, on: bool) -> (Color32, Stroke) {
+        if on { (self.acc, self.hot) } else { (WELL, self.st) }
+    }
+    fn font(&self, size: f32) -> FontId {
+        FontId::proportional(size * self.k)
+    }
+    fn fill(&self, pts: &[Pt], tris: &[u32], color: Color32) {
+        if pts.is_empty() {
+            return;
+        }
+        let mut m = egui::Mesh::default();
+        for &(x, y) in pts {
+            m.colored_vertex(self.at(x, y), color);
+        }
+        m.indices = tris.to_vec();
+        self.p.add(Shape::mesh(m));
+    }
+    fn trace(&self, pts: &[Pt], stroke: Stroke) {
+        if !pts.is_empty() {
+            self.p.add(Shape::closed_line(pts.iter().map(|&(x, y)| self.at(x, y)).collect(), stroke));
+        }
+    }
+    /// Convex shape relative to a centre, filled when pressed.
+    fn key(&self, c: Pt, pts: &[Pt], on: bool) {
+        let (fill, stroke) = self.pick(on);
+        self.p.add(Shape::convex_polygon(pts.iter().map(|&(x, y)| self.at(c.0 + x, c.1 + y)).collect(), fill, stroke));
+    }
+    fn trigger(&self, x0: f32, y0: f32, w: f32, v: u8, name: &str) {
+        let t = Rect::from_min_max(self.at(x0, y0), self.at(x0 + w, y0 + 30.0));
+        let cr = CornerRadius { nw: (14.0 * self.k) as u8, ne: (14.0 * self.k) as u8, sw: (3.0 * self.k) as u8, se: (3.0 * self.k) as u8 };
+        self.p.rect_filled(t, cr, WELL);
         if v > 0 {
             let h = t.height() * v as f32 / 255.0;
-            p.rect_filled(Rect::from_min_max(pos2(t.left(), t.bottom() - h), t.max), if h > 18.0 * k { cr } else { CornerRadius::ZERO }, acc.gamma_multiply(0.9));
+            self.p.rect_filled(Rect::from_min_max(pos2(t.left(), t.bottom() - h), t.max), if h > 14.0 * self.k { cr } else { CornerRadius::ZERO }, self.acc);
         }
-        p.rect_stroke(t, cr, if v > 0 { hot } else { st }, StrokeKind::Inside);
-        p.text(at(x0 + 29.0, 22.0), Align2::CENTER_CENTER, name, font(10.0), if v > 140 { ink } else { MUTED });
+        self.p.rect_stroke(t, cr, if v > 0 { self.hot } else { self.st }, StrokeKind::Inside);
+        self.p.text(t.center(), Align2::CENTER_CENTER, name, self.font(9.0), if v > 150 { self.ink } else { MUTED });
     }
-    // bumpers
-    for (x0, bit, name) in [(84.0, LB, "L1"), (266.0, RB, "R1")] {
-        let b = r(x0, 40.0, x0 + 70.0, 54.0);
-        let (fill, stroke) = if on(bit) { (acc, hot) } else { (body, st) };
-        p.rect_filled(b, 6.0 * k, fill);
-        p.rect_stroke(b, 6.0 * k, stroke, StrokeKind::Inside);
-        p.text(b.center(), Align2::CENTER_CENTER, name, font(8.5), if on(bit) { ink } else { MUTED });
+    fn bumper(&self, x0: f32, y0: f32, w: f32, bit: u16, name: &str) {
+        let b = Rect::from_min_max(self.at(x0, y0), self.at(x0 + w, y0 + 9.0));
+        let (fill, stroke) = self.pick(self.on(bit));
+        self.p.rect_filled(b, 4.5 * self.k, fill);
+        self.p.rect_stroke(b, 4.5 * self.k, stroke, StrokeKind::Inside);
+        self.p.text(b.center(), Align2::CENTER_CENTER, name, self.font(7.0), if self.on(bit) { self.ink } else { MUTED });
     }
+    fn round(&self, c: Pt, r: f32, on: bool) {
+        let (fill, stroke) = self.pick(on);
+        self.p.circle_filled(self.at(c.0, c.1), r * self.k, fill);
+        self.p.circle_stroke(self.at(c.0, c.1), r * self.k, stroke);
+    }
+    /// Well, cap that follows the stick, a line from the centre while it is pushed.
+    fn stick(&self, c: Pt, x: f32, y: f32, bit: u16) {
+        let k = self.k;
+        let cc = self.at(c.0, c.1);
+        self.p.circle_filled(cc, 23.0 * k, WELL);
+        self.p.circle_stroke(cc, 23.0 * k, self.st);
+        let d = cc + vec2(x, -y) * 9.0 * k;
+        let moved = x != 0.0 || y != 0.0;
+        let pressed = self.on(bit);
+        self.p.circle_filled(d, 15.0 * k, if pressed { self.acc } else { WING });
+        self.p.circle_stroke(d, 15.0 * k, if moved || pressed { self.hot } else { self.st });
+        self.p.circle_stroke(d, 9.5 * k, Stroke::new(self.st.width * 0.8, if pressed { self.ink.gamma_multiply(0.5) } else { self.line.gamma_multiply(0.5) }));
+        if moved {
+            self.p.line_segment([cc, d], Stroke::new(1.4 * k, self.acc));
+            self.p.circle_filled(cc, 2.0 * k, self.acc);
+        }
+    }
+    fn symbol_stroke(&self, pressed: bool) -> Stroke {
+        Stroke::new((1.0 * self.k).max(0.9), if pressed { self.ink } else { TEXT.gamma_multiply(if self.live { 0.7 } else { 0.4 }) })
+    }
+}
 
-    // touchpad with light bars while connected
-    let pad = r(150.0, 62.0, 270.0, 118.0);
-    p.rect_filled(pad, 9.0 * k, well);
-    p.rect_stroke(pad, 9.0 * k, st, StrokeKind::Inside);
-    if live {
-        for x in [pad.left() - 5.0 * k, pad.right() + 5.0 * k] {
-            p.line_segment([pos2(x, pad.top() + 8.0 * k), pos2(x, pad.bottom() - 8.0 * k)], Stroke::new(2.0 * k, acc.gamma_multiply(0.8)));
+/// The live controller, fitted into `area`.
+fn controller(p: &Painter, area: Rect, s: &Status, skin: Skin) {
+    let k = (area.width() / 420.0).min(area.height() / 280.0);
+    let live = s.controller != 0;
+    let acc = accent();
+    let line = TEXT.gamma_multiply(if live { 0.42 } else { 0.25 });
+    let sw = k.max(1.0);
+    let pen = Pen {
+        p,
+        o: area.center() - vec2(210.0, 140.0) * k,
+        k,
+        s,
+        acc,
+        ink: on_accent(acc),
+        line,
+        st: Stroke::new(sw, line),
+        hot: Stroke::new(sw, acc),
+        live,
+    };
+    match skin {
+        Skin::DualSense => dualsense(&pen),
+        Skin::Xbox => xbox(&pen),
+    }
+}
+
+fn dualsense(pen: &Pen) {
+    let (s, k) = (pen.s, pen.k);
+    pen.trigger(70.0, 0.0, 56.0, s.pad.lt, "L2");
+    pen.trigger(294.0, 0.0, 56.0, s.pad.rt, "R2");
+    pen.bumper(62.0, 32.0, 72.0, LB, "L1");
+    pen.bumper(286.0, 32.0, 72.0, RB, "R1");
+
+    let sh = shell(Skin::DualSense);
+    pen.fill(&sh.body, &sh.body_t, WING);
+    pen.fill(&sh.plate, &sh.plate_t, PLATE);
+    pen.trace(&sh.plate, Stroke::new(pen.st.width, pen.line.gamma_multiply(0.55)));
+    pen.trace(&sh.body, pen.st);
+
+    // touchpad: flat top, bottom edge curving down in the middle
+    let mut pad = vec![(152.0, 60.0), (268.0, 60.0), (268.0, 106.0)];
+    cubic(&mut pad, (268.0, 106.0), (250.0, 122.0), (226.0, 124.0), (210.0, 124.0));
+    cubic(&mut pad, (210.0, 124.0), (194.0, 124.0), (170.0, 122.0), (152.0, 106.0));
+    pen.p.add(Shape::convex_polygon(pad.iter().map(|&(x, y)| pen.at(x, y)).collect(), WELL, pen.st));
+    // light bars beside the touchpad
+    if pen.live {
+        for (a, b) in [((146.0, 66.0), (143.0, 108.0)), ((274.0, 66.0), (277.0, 108.0))] {
+            pen.p.line_segment([pen.at(a.0, a.1), pen.at(b.0, b.1)], Stroke::new(2.0 * k, pen.acc.gamma_multiply(0.75)));
         }
     }
     // create / options
-    for (x, bit) in [(136.0, BACK), (284.0, START)] {
-        let b = Rect::from_center_size(at(x, 72.0), vec2(7.0, 16.0) * k);
-        let (fill, stroke) = pick(on(bit));
-        p.rect_filled(b, 3.5 * k, fill);
-        p.rect_stroke(b, 3.5 * k, stroke, StrokeKind::Inside);
+    for (x, bit) in [(134.0, BACK), (286.0, START)] {
+        let (fill, stroke) = pen.pick(pen.on(bit));
+        let r = Rect::from_center_size(pen.at(x, 70.0), vec2(5.0, 13.0) * k);
+        pen.p.rect_filled(r, 2.5 * k, fill);
+        pen.p.rect_stroke(r, 2.5 * k, stroke, StrokeKind::Inside);
     }
-
-    // d-pad
-    let dc = at(104.0, 112.0);
-    for (dx, dy, bit) in [(0.0, -1.0, UP), (0.0, 1.0, DOWN), (-1.0, 0.0, LEFT), (1.0, 0.0, RIGHT)] {
-        let c = dc + vec2(dx, dy) * 17.0 * k;
-        let size = if dx == 0.0 { vec2(14.0, 19.0) } else { vec2(19.0, 14.0) } * k;
-        let (fill, stroke) = pick(on(bit));
-        p.rect_filled(Rect::from_center_size(c, size), 3.5 * k, fill);
-        p.rect_stroke(Rect::from_center_size(c, size), 3.5 * k, stroke, StrokeKind::Inside);
+    // d-pad: four arrow keys pointing at the centre
+    let arrow = [(-6.5, -21.0), (6.5, -21.0), (6.5, -9.0), (0.0, -3.5), (-6.5, -9.0)];
+    for (rot, bit) in [(0, UP), (1, RIGHT), (2, DOWN), (3, LEFT)] {
+        let pts: Vec<Pt> = arrow.iter().map(|&(x, y)| match rot { 0 => (x, y), 1 => (-y, x), 2 => (-x, -y), _ => (y, -x) }).collect();
+        pen.key((96.0, 112.0), &pts, pen.on(bit));
     }
-
-    // face buttons with thin monochrome symbols
-    let fc = at(316.0, 112.0);
+    // face buttons with thin symbols
+    let fc = (324.0, 112.0);
     for (i, (dx, dy, bit)) in [(0.0, -1.0, Y), (1.0, 0.0, B), (0.0, 1.0, A), (-1.0, 0.0, X)].into_iter().enumerate() {
-        let c = fc + vec2(dx, dy) * 21.0 * k;
-        let (fill, stroke) = pick(on(bit));
-        p.circle_filled(c, 11.0 * k, fill);
-        p.circle_stroke(c, 11.0 * k, stroke);
-        let sym = Stroke::new((1.1 * k).max(0.9), if on(bit) { ink } else { TEXT.gamma_multiply(if live { 0.7 } else { 0.4 }) });
-        let m = 4.6 * k;
+        let c = (fc.0 + dx * 21.0, fc.1 + dy * 21.0);
+        let pressed = pen.on(bit);
+        pen.round(c, 10.0, pressed);
+        let (cc, m, st) = (pen.at(c.0, c.1), 4.4 * k, pen.symbol_stroke(pressed));
         match i {
             0 => {
-                p.add(Shape::closed_line(vec![c + vec2(0.0, -m), c + vec2(m * 0.95, m * 0.7), c + vec2(-m * 0.95, m * 0.7)], sym));
+                pen.p.add(Shape::closed_line(vec![cc + vec2(0.0, -m), cc + vec2(m * 0.95, m * 0.7), cc + vec2(-m * 0.95, m * 0.7)], st));
             }
             1 => {
-                p.circle_stroke(c, m, sym);
+                pen.p.circle_stroke(cc, m, st);
             }
             2 => {
-                p.line_segment([c + vec2(-m, -m) * 0.8, c + vec2(m, m) * 0.8], sym);
-                p.line_segment([c + vec2(-m, m) * 0.8, c + vec2(m, -m) * 0.8], sym);
+                pen.p.line_segment([cc + vec2(-m, -m) * 0.8, cc + vec2(m, m) * 0.8], st);
+                pen.p.line_segment([cc + vec2(-m, m) * 0.8, cc + vec2(m, -m) * 0.8], st);
             }
             _ => {
-                p.rect_stroke(Rect::from_center_size(c, vec2(m, m) * 1.6), 1.0, sym, StrokeKind::Middle);
+                pen.p.rect_stroke(Rect::from_center_size(cc, vec2(m, m) * 1.6), 1.0, st, StrokeKind::Middle);
             }
         }
     }
-
-    // PS button
-    let ps = at(210.0, 152.0);
-    let (fill, stroke) = pick(on(GUIDE));
-    p.circle_filled(ps, 9.0 * k, fill);
-    p.circle_stroke(ps, 9.0 * k, stroke);
-
-    // sticks: a line from the centre to the cap shows where the stick points
-    for (x, sx, sy, bit) in [(162.0, s.pad.lx, s.pad.ly, LS), (258.0, s.pad.rx, s.pad.ry, RS)] {
-        let c = at(x, 168.0);
-        p.circle_filled(c, 26.0 * k, well);
-        p.circle_stroke(c, 26.0 * k, st);
-        let d = c + vec2(sx, -sy) * 11.0 * k;
-        let moved = sx != 0.0 || sy != 0.0;
-        p.circle_filled(d, 16.0 * k, if on(bit) { acc } else { body });
-        p.circle_stroke(d, 16.0 * k, if moved || on(bit) { hot } else { st });
-        p.circle_stroke(d, 10.0 * k, Stroke::new(sw * 0.8, if on(bit) { ink.gamma_multiply(0.5) } else { line.gamma_multiply(0.6) }));
-        if moved {
-            p.line_segment([c, d], Stroke::new(1.6 * k, acc));
-            p.circle_filled(c, 2.2 * k, acc);
+    // speaker grille, PS button, mute button
+    for row in 0..3 {
+        for col in 0..(7 - row % 2) {
+            let x = 210.0 - (6 - row % 2) as f32 * 3.0 + col as f32 * 6.0;
+            pen.p.circle_filled(pen.at(x, 134.0 + row as f32 * 5.0), 1.0 * k, pen.line);
         }
+    }
+    pen.round((210.0, 162.0), 8.0, pen.on(GUIDE));
+    let mic = Rect::from_center_size(pen.at(210.0, 180.0), vec2(12.0, 4.0) * k);
+    pen.p.rect_stroke(mic, 2.0 * k, pen.st, StrokeKind::Inside);
+
+    pen.stick((156.0, 164.0), s.pad.lx, s.pad.ly, LS);
+    pen.stick((264.0, 164.0), s.pad.rx, s.pad.ry, RS);
+}
+
+fn xbox(pen: &Pen) {
+    let (s, k) = (pen.s, pen.k);
+    pen.trigger(78.0, 2.0, 54.0, s.pad.lt, "LT");
+    pen.trigger(288.0, 2.0, 54.0, s.pad.rt, "RT");
+    pen.bumper(66.0, 34.0, 76.0, LB, "LB");
+    pen.bumper(278.0, 34.0, 76.0, RB, "RB");
+
+    let sh = shell(Skin::Xbox);
+    pen.fill(&sh.body, &sh.body_t, WING);
+    pen.trace(&sh.body, pen.st);
+
+    // guide, view, menu
+    pen.round((210.0, 84.0), 12.0, pen.on(GUIDE));
+    let x = pen.at(210.0, 84.0);
+    let st = pen.symbol_stroke(pen.on(GUIDE));
+    pen.p.line_segment([x + vec2(-4.5, -4.5) * k, x + vec2(4.5, 4.5) * k], st);
+    pen.p.line_segment([x + vec2(-4.5, 4.5) * k, x + vec2(4.5, -4.5) * k], st);
+    for (cx, bit) in [(180.0, BACK), (240.0, START)] {
+        pen.round((cx, 112.0), 6.5, pen.on(bit));
+    }
+    // left stick high, d-pad low, right stick low, buttons high
+    pen.stick((110.0, 110.0), s.pad.lx, s.pad.ly, LS);
+    let arm = [(-6.0, -20.0), (6.0, -20.0), (6.0, -6.0), (-6.0, -6.0)];
+    for (rot, bit) in [(0, UP), (1, RIGHT), (2, DOWN), (3, LEFT)] {
+        let pts: Vec<Pt> = arm.iter().map(|&(x, y)| match rot { 0 => (x, y), 1 => (-y, x), 2 => (-x, -y), _ => (y, -x) }).collect();
+        pen.key((164.0, 164.0), &pts, pen.on(bit));
+    }
+    pen.stick((258.0, 164.0), s.pad.rx, s.pad.ry, RS);
+    let fc = (314.0, 110.0);
+    for (dx, dy, bit, name) in [(0.0, -1.0, Y, "Y"), (1.0, 0.0, B, "B"), (0.0, 1.0, A, "A"), (-1.0, 0.0, X, "X")] {
+        let c = (fc.0 + dx * 21.0, fc.1 + dy * 21.0);
+        let pressed = pen.on(bit);
+        pen.round(c, 10.0, pressed);
+        pen.p.text(pen.at(c.0, c.1), Align2::CENTER_CENTER, name, pen.font(10.0), pen.symbol_stroke(pressed).color);
     }
 }
 
 #[cfg(test)]
 mod tests {
+    /// The outlines must triangulate completely, or the controller would have holes.
+    #[test]
+    fn outlines_fill_completely() {
+        use super::*;
+        let area = |pts: &[Pt]| (0..pts.len()).map(|i| { let (a, b) = (pts[i], pts[(i + 1) % pts.len()]); a.0 * b.1 - b.0 * a.1 }).sum::<f32>().abs() / 2.0;
+        let tri_area = |pts: &[Pt], t: &[u32]| t.chunks(3).map(|c| area(&[pts[c[0] as usize], pts[c[1] as usize], pts[c[2] as usize]])).sum::<f32>();
+        for skin in [Skin::DualSense, Skin::Xbox] {
+            let sh = shell(skin);
+            assert!((area(&sh.body) - tri_area(&sh.body, &sh.body_t)).abs() < 1.0, "body");
+            assert!((area(&sh.plate) - tri_area(&sh.plate, &sh.plate_t)).abs() < 1.0, "plate");
+        }
+        // an L shape, the simplest non-convex case
+        let l = [(0.0, 0.0), (2.0, 0.0), (2.0, 1.0), (1.0, 1.0), (1.0, 2.0), (0.0, 2.0)];
+        assert_eq!(triangulate(&l).len(), 12);
+    }
+
     #[test]
     fn click_wav_is_valid() {
         let w = super::sound::wav(2000.0, 10.0, 0.1);

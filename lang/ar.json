@@ -68,6 +68,7 @@
  "Thanks for trying it.": "شكرًا لتجربتك.",
  "The background service is not running": "خدمة الخلفية لا تعمل",
  "The download is checked against GitHub's SHA-256 checksum before anything is replaced.": "يُتحقق من الملف المنزَّل مقابل المجموع الاختباري SHA-256 من GitHub قبل استبدال أي شيء.",
+ "This is what games see.": "هذا ما تراه الألعاب.",
  "This removes the app, its shortcuts and its settings.": "سيؤدي هذا إلى إزالة التطبيق واختصاراته وإعداداته.",
  "Try again": "حاول مجددًا",
  "UPDATES": "التحديثات",

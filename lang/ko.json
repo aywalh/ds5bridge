@@ -68,6 +68,7 @@
  "Thanks for trying it.": "사용해 주셔서 감사합니다.",
  "The background service is not running": "백그라운드 서비스가 실행 중이 아닙니다",
  "The download is checked against GitHub's SHA-256 checksum before anything is replaced.": "교체하기 전에 다운로드한 파일을 GitHub의 SHA-256 체크섬으로 확인합니다.",
+ "This is what games see.": "게임에서는 이렇게 보입니다.",
  "This removes the app, its shortcuts and its settings.": "앱, 바로 가기, 설정이 제거됩니다.",
  "Try again": "다시 시도",
  "UPDATES": "업데이트",
