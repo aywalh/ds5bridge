@@ -125,9 +125,6 @@ extern "system" {
     pub fn CreateFileMappingW(file: Handle, sa: *const c_void, protect: u32, size_hi: u32, size_lo: u32, name: *const u16) -> Handle;
     pub fn MapViewOfFile(h: Handle, access: u32, off_hi: u32, off_lo: u32, bytes: usize) -> *mut c_void;
     pub fn GetModuleHandleW(name: *const u16) -> isize;
-    pub fn GetUserDefaultGeoName(buf: *mut u16, n: i32) -> i32;
-    pub fn GetUserDefaultUILanguage() -> u16;
-    pub fn GetUserDefaultLocaleName(buf: *mut u16, n: i32) -> i32;
 }
 
 #[link(name = "setupapi")]

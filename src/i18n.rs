@@ -62,9 +62,9 @@ pub fn id_of(code: &str) -> Option<usize> {
     LANGS.iter().position(|l| l.0 == code)
 }
 
-/// Pick the saved language, else the Windows one, else English.
+/// The saved language, else English (the user picks another one in the app).
 pub fn init(saved: Option<&str>) {
-    set(saved.and_then(id_of).or_else(system).unwrap_or(0));
+    set(saved.and_then(id_of).unwrap_or(0));
 }
 
 /// A language's own name, ready for egui.
@@ -102,46 +102,6 @@ fn fill(t: &str, args: &[&dyn Display]) -> String {
         out.push_str(p);
     }
     out
-}
-
-/// The user's language from local Windows settings only (nothing leaves the PC): first the Windows
-/// display language (what the user actually reads), then the region, then the format locale.
-pub fn system() -> Option<usize> {
-    use crate::sys::{GetUserDefaultGeoName, GetUserDefaultLocaleName, GetUserDefaultUILanguage};
-    let by_ui = match unsafe { GetUserDefaultUILanguage() } & 0x3FF {
-        0x09 => Some("en"),
-        0x07 => Some("de"),
-        0x11 => Some("ja"),
-        0x04 => Some("zh"),
-        0x12 => Some("ko"),
-        0x2A => Some("vi"),
-        0x64 => Some("fil"),
-        0x01 => Some("ar"),
-        _ => None,
-    };
-    if let Some(c) = by_ui {
-        return id_of(c);
-    }
-    let mut buf = [0u16; 85];
-    let n = unsafe { GetUserDefaultGeoName(buf.as_mut_ptr(), buf.len() as i32) };
-    let region = if n > 1 { String::from_utf16_lossy(&buf[..n as usize - 1]) } else { String::new() };
-    let by_region = match region.as_str() {
-        "DE" | "AT" | "CH" | "LI" | "LU" => Some("de"),
-        "JP" => Some("ja"),
-        "CN" | "TW" | "HK" | "MO" | "SG" => Some("zh"),
-        "KR" => Some("ko"),
-        "VN" => Some("vi"),
-        "PH" => Some("fil"),
-        "SA" | "AE" | "EG" | "QA" | "KW" | "BH" | "OM" | "JO" | "LB" | "IQ" | "SY" | "YE" | "LY" | "TN" | "DZ" | "MA" | "SD" | "PS" => Some("ar"),
-        _ => None,
-    };
-    if let Some(c) = by_region {
-        return id_of(c);
-    }
-    let n = unsafe { GetUserDefaultLocaleName(buf.as_mut_ptr(), buf.len() as i32) };
-    let locale = if n > 1 { String::from_utf16_lossy(&buf[..n as usize - 1]) } else { return None };
-    let lang = locale.split('-').next().unwrap_or("");
-    id_of(if lang == "tl" { "fil" } else { lang })
 }
 
 /// egui joins Arabic letters and mirrors each Arabic word itself, but lays a line out left to right
