@@ -1,0 +1,21 @@
+[package]
+name = "ds5bridge"
+version = "1.0.0"
+edition = "2021"
+description = "Use a PS5 DualSense (USB or Bluetooth) as an Xbox controller on Windows. Offline, no telemetry."
+authors = ["aywalh"]
+license = "MIT"
+repository = "https://github.com/aywalh/ds5bridge"
+readme = "README.md"
+keywords = ["dualsense", "ps5", "controller", "xinput", "vigem"]
+categories = ["hardware-support"]
+
+[dependencies]
+# lightweight: OpenGL (glow) instead of wgpu, no Linux/web parts; accesskit for screen readers
+eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "accesskit"] }
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+panic = "abort"

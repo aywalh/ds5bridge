@@ -1,0 +1,5 @@
+/target
+/DS5Bridge.exe
+*.exe.sha256
+tools/*.log
+*.png.tmp
