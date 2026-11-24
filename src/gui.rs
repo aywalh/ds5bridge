@@ -1148,8 +1148,7 @@ impl App {
 
 // ------------------------------------------------------------ installer ---
 //
-// A two-part card like a printed page: big serif title, the step's content and exactly one action
-// on the left; the controller on its blue halo on the right; a torn paper edge in between.
+// Dark stage with facts about the app on top, a light sheet with an arched top edge below.
 
 const PAPER: Color32 = Color32::from_rgb(250, 249, 246);
 const PAPER_INK: Color32 = Color32::from_rgb(22, 21, 26);
@@ -1185,6 +1184,18 @@ fn paper_check(ui: &mut egui::Ui, on: &mut bool, label: &str) -> Response {
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
+/// Little true facts about the app for the installer's stage: (big value, caption).
+fn facts() -> [(&'static str, &'static str); 6] {
+    [
+        ("~2 MB", tr("of memory while it runs in the background")),
+        ("592 Hz", tr("reports per second over Bluetooth, measured")),
+        ("0 bytes", tr("of your data ever leave your PC")),
+        ("1 file", tr("is the whole app. No runtimes, no extra packages")),
+        ("8", tr("languages, from Deutsch to 日本語")),
+        ("Rust", tr("all the way down, talking straight to Windows")),
+    ]
+}
+
 impl App {
     fn go(&mut self, step: usize) {
         self.step = step.min(STEPS - 1);
@@ -1196,41 +1207,32 @@ impl App {
         if self.render_to.is_some() { 5.0 } else { self.step_at.elapsed().as_secs_f32() }
     }
 
+    /// Dark stage on top with rotating facts; a light sheet below whose top edge is an arch (the
+    /// logo's shape). A line along the arch shows how far through the steps you are.
     fn installer(&mut self, ui: &mut egui::Ui, full: Rect) {
         let p = ui.painter().clone();
         let drag = ui.interact(full, ui.scope_id().with("drag"), Sense::click_and_drag());
         if drag.drag_started() {
             ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
         }
-        let mid = full.left() + full.width() * 0.5;
-        let left = Rect::from_min_max(full.min, pos2(mid, full.bottom()));
-        let right = Rect::from_min_max(pos2(mid, full.top()), full.max);
+        let now = if self.render_to.is_some() { 0.6 } else { self.launched.elapsed().as_secs_f32() };
+        let acc = accent();
 
-        // right: the controller, quietly pressing a button now and then
-        p.rect_filled(right, CornerRadius { ne: CARD_R, se: CARD_R, ..Default::default() }, SCENE);
-        let now = if self.render_to.is_some() { 0.3 } else { self.launched.elapsed().as_secs_f32() };
-        let mut demo = demo_status();
-        let presses = [A, 0, RB, 0, Y, 0, UP, 0, B, 0, X, 0];
-        demo.pad = Pad { buttons: presses[(now / 0.8) as usize % presses.len()], ..Pad::default() };
-        demo.pad.lx = 0.7 * (now * 1.2).cos();
-        demo.pad.ly = 0.7 * (now * 1.2).sin();
-        demo.pad.rt = if (now / 0.8) as usize % presses.len() == 9 { 210 } else { 0 };
-        crate::ps5::paint(&p, Rect::from_min_max(right.min + vec2(30.0, 70.0), right.max - vec2(24.0, 70.0)), &demo);
-        // step dots
-        let dots_w = (STEPS as f32 - 1.0) * 12.0 + 18.0;
-        let mut x = right.center().x - dots_w / 2.0;
-        for i in 0..STEPS {
-            let w = if i == self.step { 18.0 } else { 6.0 };
-            let r = Rect::from_min_size(pos2(x, right.bottom() - 28.0), vec2(w, 6.0));
-            p.rect_filled(r, 3.0, Color32::from_white_alpha(if i == self.step { 230 } else { 80 }));
-            x += w + 6.0;
+        // ---- stage
+        p.rect_filled(full, CARD_R, SCENE);
+        // a soft glow: many faint discs blend into a smooth falloff
+        for i in 0..14 {
+            p.circle_filled(pos2(full.right() - 170.0, full.top() + 60.0), 300.0 - i as f32 * 20.0, acc.gamma_multiply(0.008));
         }
-        // minimise / close as soft round buttons on the scene
+        // logo and name
+        mark(&p, pos2(full.left() + 46.0, full.top() + 40.0), 0.55, TEXT, acc, 9.0);
+        p.text(pos2(full.left() + 66.0, full.top() + 40.0), Align2::LEFT_CENTER, APP, FontId::proportional(14.0), TEXT);
+        // minimise / close
         for (i, is_close) in [(1.0, false), (0.0, true)] {
-            let c = pos2(right.right() - 31.0 - i * 32.0, right.top() + 31.0);
+            let c = pos2(full.right() - 32.0 - i * 32.0, full.top() + 32.0);
             let r = ui.interact(Rect::from_center_size(c, vec2(26.0, 26.0)), ui.scope_id().with(("w", is_close)), Sense::click());
-            p.circle_filled(c, 13.0, Color32::from_white_alpha(if r.hovered() { 50 } else { 20 }));
-            let st = Stroke::new(1.3, Color32::from_white_alpha(if r.hovered() { 255 } else { 190 }));
+            p.circle_filled(c, 13.0, Color32::from_white_alpha(if r.hovered() { 46 } else { 16 }));
+            let st = Stroke::new(1.3, Color32::from_white_alpha(if r.hovered() { 255 } else { 180 }));
             if is_close {
                 p.line_segment([c + vec2(-4.0, -4.0), c + vec2(4.0, 4.0)], st);
                 p.line_segment([c + vec2(-4.0, 4.0), c + vec2(4.0, -4.0)], st);
@@ -1241,29 +1243,54 @@ impl App {
                 ui.ctx().send_viewport_cmd(if is_close { ViewportCommand::Close } else { ViewportCommand::Minimized(true) });
             }
         }
-
-        // left: the paper, with a torn edge over the scene
-        p.rect_filled(left, CornerRadius { nw: CARD_R, sw: CARD_R, ..Default::default() }, PAPER);
-        let jag = |i: u32| {
-            let h = i.wrapping_mul(2_654_435_761).rotate_left(13).wrapping_mul(40_503);
-            3.0 + (h % 1000) as f32 / 1000.0 * 9.0
-        };
-        let step = 5.0;
-        let n = (full.height() / step) as u32 + 1;
-        for i in 0..n {
-            let (y0, y1) = (full.top() + i as f32 * step, (full.top() + (i + 1) as f32 * step).min(full.bottom()));
-            let pts = vec![pos2(mid - 1.0, y0), pos2(mid + jag(i), y0), pos2(mid + jag(i + 1), y1), pos2(mid - 1.0, y1)];
-            p.add(Shape::convex_polygon(pts, PAPER, Stroke::NONE));
+        // the fact slides: a new one every 3.2 s, sliding in from the right
+        let f = facts();
+        let slot = 3.2;
+        let idx = (now / slot) as usize % f.len();
+        let k = smooth((now % slot) / 0.45);
+        let (value, caption) = (tr(f[idx].0), f[idx].1);
+        let x = full.left() + 46.0 + 30.0 * (1.0 - k);
+        let ink = |c: Color32| c.gamma_multiply(k);
+        p.text(pos2(x, full.top() + 84.0), Align2::LEFT_TOP, tr("DID YOU KNOW"), FontId::proportional(11.0), ink(MUTED));
+        let big = p.layout_no_wrap(value.to_string(), serif(64.0), TEXT);
+        let big_w = big.size().x;
+        p.galley(pos2(x - 2.0, full.top() + 100.0), big, ink(TEXT));
+        let cap = p.layout(caption.to_string(), FontId::proportional(16.0), TEXT, 300.0);
+        let cap_h = cap.size().y;
+        p.galley(pos2(x + big_w + 22.0, full.top() + 140.0 - cap_h / 2.0), cap, ink(Color32::from_rgb(190, 188, 182)));
+        // slide markers on the right of the stage
+        for i in 0..f.len() {
+            let r = Rect::from_center_size(pos2(full.right() - 40.0, full.top() + 104.0 + i as f32 * 12.0), vec2(4.0, if i == idx { 12.0 } else { 4.0 }));
+            p.rect_filled(r, 2.0, Color32::from_white_alpha(if i == idx { 220 } else { 60 }));
         }
+        ui.ctx().request_repaint_after(Duration::from_millis(if self.render_to.is_some() { 1000 } else { 33 }));
 
-        // content slides in from the right on every step
-        let k = smooth(self.step_time() / 0.4);
-        let shift = 16.0 * (1.0 - k);
-        let area = Rect::from_min_max(left.min + vec2(46.0 + shift, 40.0), left.max - vec2(46.0 - shift, 30.0));
-        let top = Rect::from_min_max(area.min, pos2(area.right(), area.bottom() - 122.0));
-        let bottom = Rect::from_min_max(pos2(area.left(), area.bottom() - 112.0), area.max);
-        let mut c = ui.new_child(egui::UiBuilder::new().max_rect(top));
-        c.set_opacity(k);
+        // ---- sheet with an arched top edge, drawn as thin convex strips
+        let top = full.top() + 228.0;
+        let rise = 26.0;
+        let arch = |x: f32| top + rise * (1.0 - (std::f32::consts::PI * (x - full.left()) / full.width()).sin());
+        let n = 88;
+        let xs: Vec<f32> = (0..=n).map(|i| full.left() + full.width() * i as f32 / n as f32).collect();
+        for w in xs.windows(2) {
+            let (x0, x1) = (w[0], w[1]);
+            let bottom = full.bottom() - if x0 < full.left() + CARD_R as f32 || x1 > full.right() - CARD_R as f32 { CARD_R as f32 } else { 0.0 };
+            p.add(Shape::convex_polygon(vec![pos2(x0, arch(x0)), pos2(x1, arch(x1)), pos2(x1, bottom), pos2(x0, bottom)], PAPER, Stroke::NONE));
+        }
+        let base = Rect::from_min_max(pos2(full.left(), full.bottom() - CARD_R as f32 - 1.0), full.max);
+        p.rect_filled(base, CornerRadius { sw: CARD_R, se: CARD_R, ..Default::default() }, PAPER);
+        // progress along the arch: one fifth per step, the install step fills itself
+        let done = match self.step {
+            3 => (3.0 + smooth(self.step_time() / 1.1)) / STEPS as f32,
+            s => (s + 1) as f32 / STEPS as f32,
+        };
+        let edge: Vec<Pos2> = xs.iter().map(|&x| pos2(x, arch(x))).collect();
+        trace(&p, edge, Stroke::new(3.0, acc), done);
+
+        // ---- the step's content
+        let kk = smooth(self.step_time() / 0.35);
+        let area = Rect::from_min_max(pos2(full.left() + 48.0, top + rise + 22.0 + 10.0 * (1.0 - kk)), pos2(full.right() - 48.0, full.bottom() - 26.0));
+        let mut c = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(area.min, pos2(area.right(), area.bottom() - 56.0))));
+        c.set_opacity(kk);
         {
             let v = c.visuals_mut();
             v.override_text_color = Some(PAPER_INK);
@@ -1275,8 +1302,6 @@ impl App {
             v.widgets.hovered.fg_stroke = Stroke::new(1.0, PAPER_INK);
         }
         c.spacing_mut().item_spacing = vec2(8.0, 6.0);
-        c.label(RichText::new(trf("Step {} of {}", &[&(self.step + 1), &STEPS])).size(12.0).color(PAPER_MUTED));
-        c.add_space(4.0);
         let title = match self.step {
             0 => tr("Your DualSense, at home on Windows"),
             1 => tr("Make it yours"),
@@ -1284,27 +1309,39 @@ impl App {
             3 => tr("Setting things up"),
             _ => tr("Ready to play"),
         };
-        c.label(RichText::new(title).font(serif(38.0)).color(PAPER_INK));
-        c.add_space(18.0);
+        c.horizontal(|ui| {
+            ui.label(RichText::new(title).font(serif(30.0)).color(PAPER_INK));
+            ui.add_space(10.0);
+            ui.label(RichText::new(trf("Step {} of {}", &[&(self.step + 1), &STEPS])).size(12.0).color(PAPER_MUTED));
+        });
+        c.add_space(10.0);
 
-        let (mut action, mut note, mut back, mut progress) = (None, String::new(), false, 1.0);
+        let (mut action, mut note, mut back) = (None, String::new(), false);
         match self.step {
             0 => {
-                for line in [tr("USB and Bluetooth"), tr("Works in every game that supports Xbox controllers"), tr("Offline. No account. No telemetry.")] {
-                    c.horizontal(|ui| {
-                        let (r, _) = ui.allocate_exact_size(vec2(10.0, 20.0), Sense::hover());
-                        ui.painter().circle_filled(r.center(), 2.5, PAPER_MUTED);
-                        ui.label(RichText::new(line).size(14.0));
-                    });
-                }
+                c.columns(3, |cols| {
+                    for (col, (t, d)) in cols.iter_mut().zip([
+                        (tr("USB and Bluetooth"), tr("Cable or wireless, both just work.")),
+                        (tr("Every Xbox game"), tr("Games see a normal Xbox controller.")),
+                        (tr("Private"), tr("Offline. No account. No telemetry.")),
+                    ]) {
+                        egui::Frame::NONE.fill(PAPER_FIELD).corner_radius(14.0).inner_margin(14.0).show(col, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.label(RichText::new(t).size(14.5).color(PAPER_INK));
+                            ui.label(RichText::new(d).size(12.5).color(PAPER_MUTED));
+                        });
+                    }
+                });
                 action = Some(tr("Get started"));
                 note = tr("Free and open source. Nothing leaves your PC.").to_string();
             }
             1 => {
-                let labels = [tr("Start menu shortcut"), tr("Desktop shortcut"), tr("Start with Windows"), tr("Check for updates")];
-                for (i, t) in labels.into_iter().enumerate() {
-                    paper_check(&mut c, &mut self.opt[i], t);
-                }
+                c.columns(2, |cols| {
+                    let labels = [tr("Start menu shortcut"), tr("Desktop shortcut"), tr("Start with Windows"), tr("Check for updates")];
+                    for (i, t) in labels.into_iter().enumerate() {
+                        paper_check(&mut cols[i / 2], &mut self.opt[i], t);
+                    }
+                });
                 c.add_space(6.0);
                 c.horizontal(|ui| {
                     ui.label(RichText::new(tr("Language")).size(14.0).color(PAPER_MUTED));
@@ -1345,21 +1382,18 @@ impl App {
             }
             3 => {
                 let t = self.step_time();
-                progress = smooth(t / 1.1);
                 let failed = if let Inst::Failed(e) = &self.inst { Some(e.clone()) } else { None };
                 match failed {
                     Some(e) => {
                         c.label(RichText::new(trf("Installation failed: {}", &[&e])).size(13.5).color(Color32::from_rgb(190, 80, 60)));
                         action = Some(tr("Try again"));
-                        progress = 0.0;
                     }
                     None => {
                         let msg = if t < 0.4 { tr("Copying DS5 Bridge…") } else if t < 0.8 { tr("Creating shortcuts…") } else { tr("Almost done…") };
-                        c.label(RichText::new(msg).size(13.5).color(PAPER_MUTED));
+                        c.label(RichText::new(msg).size(14.0).color(PAPER_MUTED));
                         if t > 1.25 && self.render_to.is_none() {
                             self.go(4);
                         }
-                        ui.ctx().request_repaint();
                     }
                 }
             }
@@ -1370,23 +1404,22 @@ impl App {
             }
         }
 
-        // bottom: one action, a hand-drawn line (it draws itself as progress), a small note
-        let mut b = ui.new_child(egui::UiBuilder::new().max_rect(bottom));
-        b.set_opacity(k);
-        let cx = bottom.center().x;
-        let bp = b.painter().clone();
+        // ---- bottom row: note on the left, back + one filled pill on the right
+        let row = Rect::from_min_max(pos2(area.left(), area.bottom() - 40.0), area.max);
+        let mut right_x = row.right();
         if let Some(label) = action {
-            let g = bp.layout_no_wrap(label.to_string(), serif(20.0), PAPER_INK);
-            let w = g.size().x + 30.0;
-            let r = Rect::from_center_size(pos2(cx, bottom.top() + 16.0), vec2(w, 32.0));
-            let resp = b.interact(r, b.scope_id().with("go"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
-            let nudge = b.ctx().animate_bool(resp.id, resp.hovered()) * 3.0;
-            bp.galley(pos2(r.left(), r.center().y - g.size().y / 2.0), g, PAPER_INK);
-            let a = pos2(r.right() - 12.0 + nudge, r.center().y);
-            let st = Stroke::new(1.6, PAPER_INK);
-            bp.line_segment([a - vec2(9.0, 0.0), a + vec2(3.0, 0.0)], st);
-            bp.line_segment([a + vec2(3.0, 0.0), a + vec2(-2.0, -5.0)], st);
-            bp.line_segment([a + vec2(3.0, 0.0), a + vec2(-2.0, 5.0)], st);
+            let g = p.layout_no_wrap(label.to_string(), FontId::proportional(14.5), PAPER);
+            let r = Rect::from_min_max(pos2(row.right() - g.size().x - 58.0, row.top()), row.max);
+            let resp = ui.interact(r, ui.scope_id().with("go"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+            let h = ui.ctx().animate_bool(resp.id, resp.hovered());
+            p.rect_filled(r, 20.0, mix(PAPER_INK, Color32::from_rgb(52, 50, 58), h).gamma_multiply(kk));
+            p.galley(pos2(r.left() + 22.0, r.center().y - g.size().y / 2.0), g, PAPER);
+            let a = pos2(r.right() - 22.0 + h * 3.0, r.center().y);
+            let st = Stroke::new(1.6, acc);
+            p.line_segment([a - vec2(9.0, 0.0), a + vec2(3.0, 0.0)], st);
+            p.line_segment([a + vec2(3.0, 0.0), a + vec2(-2.0, -5.0)], st);
+            p.line_segment([a + vec2(3.0, 0.0), a + vec2(-2.0, 5.0)], st);
+            right_x = r.left() - 18.0;
             if resp.clicked() {
                 sound::click();
                 match self.step {
@@ -1407,34 +1440,25 @@ impl App {
                     }
                     _ => {
                         let _ = std::process::Command::new(installer::installed_exe()).spawn();
-                        b.ctx().send_viewport_cmd(ViewportCommand::Close);
+                        ui.ctx().send_viewport_cmd(ViewportCommand::Close);
                     }
                 }
             }
         }
-        let line: Vec<Pos2> = (0..=48)
-            .map(|i| {
-                let x = -110.0 + i as f32 * 220.0 / 48.0;
-                pos2(cx + x, bottom.top() + 44.0 + (x * 0.09).sin() * 1.1 + (x * 0.031 + 1.0).sin() * 0.9)
-            })
-            .collect();
-        trace(&bp, line, Stroke::new(3.0, PAPER_INK), progress);
-        if !note.is_empty() {
-            let g = bp.layout(note, FontId::proportional(12.5), PAPER_MUTED, 300.0);
-            bp.galley(pos2(cx - g.size().x / 2.0, bottom.top() + 60.0), g, PAPER_MUTED);
-        }
         if back {
-            let r = Rect::from_min_size(pos2(area.left(), bottom.top() + 6.0), vec2(60.0, 20.0));
-            let resp = b.interact(r, b.scope_id().with("back"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
-            bp.text(r.left_center(), Align2::LEFT_CENTER, format!("← {}", tr("Back")), FontId::proportional(12.5), if resp.hovered() { PAPER_INK } else { PAPER_MUTED });
+            let g = p.layout_no_wrap(tr("Back").to_string(), FontId::proportional(13.5), PAPER_MUTED);
+            let r = Rect::from_min_max(pos2(right_x - g.size().x, row.top()), pos2(right_x, row.bottom()));
+            let resp = ui.interact(r, ui.scope_id().with("back"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+            p.galley(pos2(r.left(), r.center().y - g.size().y / 2.0), g, if resp.hovered() { PAPER_INK } else { PAPER_MUTED });
+            right_x = r.left() - 18.0;
             if resp.clicked() {
                 sound::click();
                 self.go(self.step - 1);
             }
         }
-        if self.render_to.is_none() {
-            // keep the controller and the slide alive while the installer is open
-            ui.ctx().request_repaint_after(Duration::from_millis(33));
+        if !note.is_empty() {
+            let g = p.layout(note, FontId::proportional(12.5), PAPER_MUTED, (right_x - row.left()).min(380.0));
+            p.galley(pos2(row.left(), row.center().y - g.size().y / 2.0), g, PAPER_MUTED.gamma_multiply(kk));
         }
     }
 }

@@ -35,7 +35,7 @@ the internet except to ask GitHub whether there is a new version (you can turn t
 - **Your colours:** six calm accent presets or any colour you pick.
 - **Lives in the tray.** Closing the window keeps the bridge running at about **2–3 MB of RAM**
   and **well under 1 % CPU**.
-- **A calm installer** (one step per page), plus updater and uninstaller. Per user, no admin rights.
+- **A calm installer** with little facts about the app, plus updater and uninstaller. Per user, no admin rights.
 - **Updates you can trust:** a new version is installed only if its SHA-256 matches the checksum
   published on GitHub.
 - **8 languages:** English, Deutsch, 日本語, 简体中文, 한국어, Tiếng Việt, Filipino, العربية.
