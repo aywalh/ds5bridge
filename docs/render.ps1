@@ -11,6 +11,7 @@ $jobs = @(
     @('main', 'en', 'screenshot-splash'),
     @('install', 'en', 'screenshot-install'),
     @('install', 'en', 'screenshot-install-options'),
+    @('main', 'en', 'screenshot-update'),
     @('main', 'de', 'screenshot-main-de'),
     @('main', 'ja', 'screenshot-main-ja')
 )

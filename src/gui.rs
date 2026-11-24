@@ -162,7 +162,7 @@ fn launch(mode: Mode, render_to: Option<std::path::PathBuf>) {
     }
     let size = match mode {
         Mode::Main => [860.0, 560.0],
-        Mode::Install => [880.0, 560.0],
+        Mode::Install => [520.0, 660.0],
         Mode::Uninstall => [460.0, 300.0],
         Mode::Banner => [1280.0, 640.0],
     };
@@ -191,7 +191,22 @@ fn launch(mode: Mode, render_to: Option<std::path::PathBuf>) {
                 }
                 // "install-options" / "install-done": that installer page
                 let name = render_to.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
-                app.step = if name.contains("options") { 1 } else if name.contains("done") { 4 } else { 0 };
+                app.step = if name.contains("done") { 2 } else { 0 };
+                app.show_options = name.contains("options");
+                // "update": the updater with an example release
+                if name.contains("update") {
+                    app.upd.lock().unwrap().release = Some(Release {
+                        version: "1.1.0".into(),
+                        notes: "- Faster Bluetooth reconnect
+- New accent colour: Ocean
+- Smaller download".into(),
+                        url: String::new(),
+                        size: 1,
+                        sha256: None,
+                        sha256_url: None,
+                    });
+                    app.show_update = true;
+                }
                 app.render_to = render_to;
                 sound::ON.store(false, Relaxed);
             }
@@ -292,7 +307,8 @@ struct App {
     logo: egui::TextureHandle,
     opt: [bool; 4], // installer: start menu, desktop, autostart, updates
     inst: Inst,
-    step: usize, // installer page
+    step: usize, // installer: 0 ready, 1 installing, 2 done
+    show_options: bool,
     step_at: std::time::Instant,
     vigem: bool,
     removed: bool,
@@ -352,6 +368,7 @@ impl App {
             opt: [true, false, true, settings.check_updates],
             inst: Inst::Ready,
             step: 0,
+            show_options: false,
             step_at: std::time::Instant::now(),
             vigem: crate::win::vigem_present(),
             removed: false,
@@ -1080,47 +1097,67 @@ impl App {
         }
     }
 
+    /// The updater: what is new, then one button that becomes the progress bar.
     fn update_view(&mut self, ui: &mut egui::Ui, r: &Release) {
-        ui.label(RichText::new(trf("Update to {}", &[&r.version])).size(20.0));
-        ui.label(RichText::new(trf("Installed: {}", &[&env!("CARGO_PKG_VERSION")])).size(12.5).color(MUTED));
-        caption(ui, tr("What's new"));
-        egui::Frame::NONE.fill(SURFACE).stroke(Stroke::new(1.0, LINE)).corner_radius(10.0).inner_margin(12.0).show(ui, |ui| {
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            let (rect, _) = ui.allocate_exact_size(vec2(44.0, 44.0), Sense::hover());
+            for i in 0..6 {
+                ui.painter().circle_filled(rect.center(), 30.0 - i as f32 * 4.0, accent().gamma_multiply(0.03));
+            }
+            mark(ui.painter(), rect.center(), 0.8, TEXT, accent(), 9.0);
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
+                ui.label(RichText::new(trf("Version {} is here", &[&r.version])).size(22.0));
+                ui.label(RichText::new(format!("{}  →  {}", env!("CARGO_PKG_VERSION"), r.version)).size(12.5).color(MUTED));
+            });
+        });
+        caption(ui, tr("WHAT'S NEW"));
+        egui::Frame::NONE.fill(SURFACE).stroke(Stroke::new(1.0, LINE)).corner_radius(12.0).inner_margin(14.0).show(ui, |ui| {
             ui.set_width(ui.available_width());
-            egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
+            egui::ScrollArea::vertical().max_height(150.0).show(ui, |ui| {
                 ui.label(RichText::new(if r.notes.is_empty() { "–" } else { &r.notes }).size(13.0));
             });
         });
-        ui.add_space(4.0);
-        let phase_info = {
+        ui.add_space(6.0);
+        let phase = {
             let u = self.upd.lock().unwrap();
             match &u.phase {
                 Phase::Idle => None,
-                Phase::Downloading => Some((self.progress.load(Relaxed) as f32 / r.size.max(1) as f32, tr("Downloading…").to_string(), accent())),
-                Phase::Installing => Some((1.0, tr("Installing…").to_string(), accent())),
-                Phase::Done(_) => Some((1.0, tr("Restarting…").to_string(), OK)),
-                Phase::Failed(m) => Some((0.0, m.clone(), ERR)),
+                Phase::Downloading => {
+                    let f = self.progress.load(Relaxed) as f32 / r.size.max(1) as f32;
+                    Some((Some(f), format!("{} {:.0} %", tr("Downloading…"), f.min(1.0) * 100.0)))
+                }
+                Phase::Installing => Some((Some(1.0), tr("Installing…").to_string())),
+                Phase::Done(_) => Some((Some(1.0), tr("Restarting…").to_string())),
+                Phase::Failed(m) => Some((None, m.clone())),
             }
         };
-        match phase_info {
+        let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 46.0), Sense::hover());
+        match phase {
             None => {
-                ui.label(RichText::new(tr("The download is checked against GitHub's SHA-256 checksum before anything is replaced.")).size(12.0).color(MUTED));
-                if primary(ui, tr("Update now")).clicked() {
+                if pill(ui, rect, tr("Update now"), None) {
                     self.start_update();
                 }
+                ui.label(RichText::new(tr("The download is checked against GitHub's SHA-256 checksum before anything is replaced.")).size(12.0).color(MUTED));
             }
-            Some((f, text, color)) => {
-                if color != ERR {
-                    ui.add(egui::ProgressBar::new(f.min(1.0)).fill(color).corner_radius(5.0).desired_height(8.0));
-                }
-                ui.label(RichText::new(text).color(color));
-                if color == ERR && secondary(ui, tr("Try again")).clicked() {
+            Some((Some(f), text)) => {
+                pill(ui, rect, &text, Some(f));
+            }
+            Some((None, err)) => {
+                if pill(ui, rect, tr("Try again"), None) {
                     self.upd.lock().unwrap().phase = Phase::Idle;
                 }
+                ui.label(RichText::new(err).size(12.5).color(ERR));
             }
         }
         let idle = matches!(self.upd.lock().unwrap().phase, Phase::Idle | Phase::Failed(_));
-        if idle && secondary(ui, tr("Back")).clicked() {
-            self.show_update = false;
+        if idle {
+            ui.add_space(2.0);
+            if ui.add(egui::Label::new(RichText::new(tr("Not now")).size(13.0).color(MUTED)).sense(Sense::click())).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                sound::click();
+                self.show_update = false;
+            }
         }
     }
 
@@ -1148,91 +1185,101 @@ impl App {
 
 // ------------------------------------------------------------ installer ---
 //
-// Dark stage with facts about the app on top, a light sheet with an arched top edge below.
+// One small dark window, one decision: the controller floats in the middle, a line of text, one
+// big button that turns into the progress bar. Options stay folded until you want them. A fact
+// about the app ticks along the bottom.
 
-const PAPER: Color32 = Color32::from_rgb(250, 249, 246);
-const PAPER_INK: Color32 = Color32::from_rgb(22, 21, 26);
-const PAPER_MUTED: Color32 = Color32::from_rgb(132, 128, 138);
-const PAPER_FIELD: Color32 = Color32::from_rgb(238, 236, 232);
-const SCENE: Color32 = Color32::from_rgb(12, 13, 17);
-const STEPS: usize = 5;
+const SCENE: Color32 = Color32::from_rgb(10, 11, 14);
 const CARD_R: u8 = 22;
 
-fn serif(size: f32) -> FontId {
-    FontId::new(size, FontFamily::Name("serif".into()))
-}
-
-/// Checkbox for the paper side.
-fn paper_check(ui: &mut egui::Ui, on: &mut bool, label: &str) -> Response {
-    let g = ui.painter().layout_no_wrap(label.to_string(), FontId::proportional(14.0), PAPER_INK);
-    let (rect, mut resp) = ui.allocate_exact_size(vec2(30.0 + g.size().x, 28.0), Sense::click());
-    if resp.clicked() {
-        *on = !*on;
-        sound::click();
-        resp.mark_changed();
-    }
-    let t = ui.ctx().animate_bool(resp.id, *on);
-    let b = Rect::from_center_size(pos2(rect.left() + 9.0, rect.center().y), vec2(18.0, 18.0));
-    let p = ui.painter();
-    p.rect_filled(b, 6.0, mix(PAPER, PAPER_INK, t));
-    p.rect_stroke(b, 6.0, Stroke::new(1.5, mix(PAPER_MUTED, PAPER_INK, t)), StrokeKind::Inside);
-    if t > 0.0 {
-        let c = b.center();
-        p.add(Shape::line(vec![c + vec2(-4.5, 0.5), c + vec2(-1.3, 3.5), c + vec2(4.5, -3.2)], Stroke::new(1.8, PAPER.gamma_multiply(t))));
-    }
-    p.galley(pos2(b.right() + 11.0, rect.center().y - g.size().y / 2.0), g, PAPER_INK);
-    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
-}
-
-/// Little true facts about the app for the installer's stage: (big value, caption).
-fn facts() -> [(&'static str, &'static str); 6] {
+/// Little true facts about the app, shown one at a time.
+fn facts() -> [String; 6] {
     [
-        ("~2 MB", tr("of memory while it runs in the background")),
-        ("592 Hz", tr("reports per second over Bluetooth, measured")),
-        ("0 bytes", tr("of your data ever leave your PC")),
-        ("1 file", tr("is the whole app. No runtimes, no extra packages")),
-        ("8", tr("languages, from Deutsch to 日本語")),
-        ("Rust", tr("all the way down, talking straight to Windows")),
+        format!("~2 MB {}", tr("of memory while it runs in the background")),
+        format!("592 Hz {}", tr("reports per second over Bluetooth, measured")),
+        format!("{} {}", tr("0 bytes"), tr("of your data ever leave your PC")),
+        format!("{} {}", tr("1 file"), tr("is the whole app. No runtimes, no extra packages")),
+        format!("8 {}", tr("languages, from Deutsch to 日本語")),
+        format!("Rust {}", tr("all the way down, talking straight to Windows")),
     ]
 }
 
-impl App {
-    fn go(&mut self, step: usize) {
-        self.step = step.min(STEPS - 1);
-        self.step_at = std::time::Instant::now();
-    }
+/// Wrapped text, every line centred on `top.x`; returns its height.
+fn centered(p: &Painter, text: &str, font: FontId, color: Color32, width: f32, top: Pos2) -> f32 {
+    let mut job = egui::text::LayoutJob::simple(text.to_string(), font, color, width);
+    job.halign = egui::Align::Center;
+    let g = p.layout_job(job);
+    let h = g.size().y;
+    p.galley(top, g, color);
+    h
+}
 
-    /// Seconds since the current step appeared (renders count as settled).
+/// Big pill button that fills from the left while `progress` is Some; returns true on click.
+fn pill(ui: &mut egui::Ui, rect: Rect, label: &str, progress: Option<f32>) -> bool {
+    let a = accent();
+    let resp = ui.interact(rect, ui.scope_id().with(("pill", label)), Sense::click());
+    let h = ui.ctx().animate_bool(resp.id, resp.hovered() && progress.is_none());
+    let p = ui.painter();
+    let r = rect.height() / 2.0;
+    match progress {
+        None => {
+            // a soft glow under the button, brighter on hover
+            for i in 0..6 {
+                p.rect_filled(rect.expand(2.0 + i as f32 * 3.0), r + i as f32 * 3.0, a.gamma_multiply(0.018 + 0.012 * h));
+            }
+            p.rect_filled(rect, r, a);
+        }
+        Some(f) => {
+            p.rect_filled(rect, r, SURFACE2);
+            let w = rect.width() * f.clamp(0.0, 1.0);
+            if w > 1.0 {
+                p.with_clip_rect(Rect::from_min_size(rect.min, vec2(w, rect.height()))).rect_filled(rect, r, a.gamma_multiply(0.85));
+            }
+        }
+    }
+    let ink = if progress.is_none() { on_accent(a) } else { TEXT };
+    p.text(rect.center() + vec2(0.0, -h), Align2::CENTER_CENTER, label, FontId::proportional(15.0), ink);
+    let clicked = progress.is_none() && resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+    if clicked {
+        sound::click();
+    }
+    clicked
+}
+
+impl App {
+    /// Seconds since the current step began (renders count as settled).
     fn step_time(&self) -> f32 {
         if self.render_to.is_some() { 5.0 } else { self.step_at.elapsed().as_secs_f32() }
     }
 
-    /// Dark stage on top with rotating facts; a light sheet below whose top edge is an arch (the
-    /// logo's shape). A line along the arch shows how far through the steps you are.
+    fn go(&mut self, step: usize) {
+        self.step = step;
+        self.step_at = std::time::Instant::now();
+    }
+
+    // steps: 0 ready, 1 installing, 2 done
     fn installer(&mut self, ui: &mut egui::Ui, full: Rect) {
         let p = ui.painter().clone();
         let drag = ui.interact(full, ui.scope_id().with("drag"), Sense::click_and_drag());
         if drag.drag_started() {
             ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
         }
-        let now = if self.render_to.is_some() { 0.6 } else { self.launched.elapsed().as_secs_f32() };
+        let now = if self.render_to.is_some() { 0.3 } else { self.launched.elapsed().as_secs_f32() };
         let acc = accent();
+        p.rect(full, CARD_R, SCENE, Stroke::new(1.0, LINE), StrokeKind::Inside);
+        ui.ctx().request_repaint_after(Duration::from_millis(if self.render_to.is_some() { 1000 } else { 33 }));
 
-        // ---- stage
-        p.rect_filled(full, CARD_R, SCENE);
-        // a soft glow: many faint discs blend into a smooth falloff
-        for i in 0..14 {
-            p.circle_filled(pos2(full.right() - 170.0, full.top() + 60.0), 300.0 - i as f32 * 20.0, acc.gamma_multiply(0.008));
-        }
-        // logo and name
-        mark(&p, pos2(full.left() + 46.0, full.top() + 40.0), 0.55, TEXT, acc, 9.0);
-        p.text(pos2(full.left() + 66.0, full.top() + 40.0), Align2::LEFT_CENTER, APP, FontId::proportional(14.0), TEXT);
-        // minimise / close
+        // top: mark + name, minimise / close
+        mark(&p, pos2(full.left() + 34.0, full.top() + 30.0), 0.5, TEXT, acc, 9.0);
+        p.text(pos2(full.left() + 52.0, full.top() + 30.0), Align2::LEFT_CENTER, APP, FontId::proportional(13.5), TEXT);
+        p.text(pos2(full.left() + 52.0 + 76.0, full.top() + 30.0), Align2::LEFT_CENTER, format!("v{}", env!("CARGO_PKG_VERSION")), FontId::proportional(12.0), MUTED);
         for (i, is_close) in [(1.0, false), (0.0, true)] {
-            let c = pos2(full.right() - 32.0 - i * 32.0, full.top() + 32.0);
-            let r = ui.interact(Rect::from_center_size(c, vec2(26.0, 26.0)), ui.scope_id().with(("w", is_close)), Sense::click());
-            p.circle_filled(c, 13.0, Color32::from_white_alpha(if r.hovered() { 46 } else { 16 }));
-            let st = Stroke::new(1.3, Color32::from_white_alpha(if r.hovered() { 255 } else { 180 }));
+            let c = pos2(full.right() - 28.0 - i * 30.0, full.top() + 30.0);
+            let r = ui.interact(Rect::from_center_size(c, vec2(24.0, 24.0)), ui.scope_id().with(("w", is_close)), Sense::click());
+            if r.hovered() {
+                p.circle_filled(c, 12.0, Color32::from_white_alpha(22));
+            }
+            let st = Stroke::new(1.2, if r.hovered() { TEXT } else { MUTED });
             if is_close {
                 p.line_segment([c + vec2(-4.0, -4.0), c + vec2(4.0, 4.0)], st);
                 p.line_segment([c + vec2(-4.0, 4.0), c + vec2(4.0, -4.0)], st);
@@ -1243,223 +1290,134 @@ impl App {
                 ui.ctx().send_viewport_cmd(if is_close { ViewportCommand::Close } else { ViewportCommand::Minimized(true) });
             }
         }
-        // the fact slides: a new one every 3.2 s, sliding in from the right
-        let f = facts();
-        let slot = 3.2;
-        let idx = (now / slot) as usize % f.len();
-        let k = smooth((now % slot) / 0.45);
-        let (value, caption) = (tr(f[idx].0), f[idx].1);
-        let x = full.left() + 46.0 + 30.0 * (1.0 - k);
-        let ink = |c: Color32| c.gamma_multiply(k);
-        p.text(pos2(x, full.top() + 84.0), Align2::LEFT_TOP, tr("DID YOU KNOW"), FontId::proportional(11.0), ink(MUTED));
-        let big = p.layout_no_wrap(value.to_string(), serif(64.0), TEXT);
-        let big_w = big.size().x;
-        p.galley(pos2(x - 2.0, full.top() + 100.0), big, ink(TEXT));
-        let cap = p.layout(caption.to_string(), FontId::proportional(16.0), TEXT, 300.0);
-        let cap_h = cap.size().y;
-        p.galley(pos2(x + big_w + 22.0, full.top() + 140.0 - cap_h / 2.0), cap, ink(Color32::from_rgb(190, 188, 182)));
-        // slide markers on the right of the stage
-        for i in 0..f.len() {
-            let r = Rect::from_center_size(pos2(full.right() - 40.0, full.top() + 104.0 + i as f32 * 12.0), vec2(4.0, if i == idx { 12.0 } else { 4.0 }));
-            p.rect_filled(r, 2.0, Color32::from_white_alpha(if i == idx { 220 } else { 60 }));
-        }
-        ui.ctx().request_repaint_after(Duration::from_millis(if self.render_to.is_some() { 1000 } else { 33 }));
 
-        // ---- sheet with an arched top edge, drawn as thin convex strips
-        let top = full.top() + 228.0;
-        let rise = 26.0;
-        let arch = |x: f32| top + rise * (1.0 - (std::f32::consts::PI * (x - full.left()) / full.width()).sin());
-        let n = 88;
-        let xs: Vec<f32> = (0..=n).map(|i| full.left() + full.width() * i as f32 / n as f32).collect();
-        for w in xs.windows(2) {
-            let (x0, x1) = (w[0], w[1]);
-            let bottom = full.bottom() - if x0 < full.left() + CARD_R as f32 || x1 > full.right() - CARD_R as f32 { CARD_R as f32 } else { 0.0 };
-            p.add(Shape::convex_polygon(vec![pos2(x0, arch(x0)), pos2(x1, arch(x1)), pos2(x1, bottom), pos2(x0, bottom)], PAPER, Stroke::NONE));
-        }
-        let base = Rect::from_min_max(pos2(full.left(), full.bottom() - CARD_R as f32 - 1.0), full.max);
-        p.rect_filled(base, CornerRadius { sw: CARD_R, se: CARD_R, ..Default::default() }, PAPER);
-        // progress along the arch: one fifth per step, the install step fills itself
-        let done = match self.step {
-            3 => (3.0 + smooth(self.step_time() / 1.1)) / STEPS as f32,
-            s => (s + 1) as f32 / STEPS as f32,
+        // hero: the controller floats and presses a button now and then; it makes room for options
+        let open = ui.ctx().animate_bool(ui.scope_id().with("opts"), self.show_options && self.step == 0);
+        let hero_h = 250.0 - 130.0 * open;
+        let hero = Rect::from_center_size(pos2(full.center().x, full.top() + 60.0 + hero_h / 2.0 + (now * 1.3).sin() * 4.0), vec2(full.width() - 70.0, hero_h));
+        let mut demo = demo_status();
+        let presses = [A, 0, RB, 0, Y, 0, UP, 0, B, 0, X, 0];
+        let beat = (now / 0.8) as usize % presses.len();
+        demo.pad = Pad { buttons: presses[beat], rt: if beat == 9 { 210 } else { 0 }, lx: 0.7 * (now * 1.2).cos(), ly: 0.7 * (now * 1.2).sin(), ..Pad::default() };
+        crate::ps5::paint(&p, hero, &demo);
+
+        // text
+        let ty = hero.bottom() + 18.0;
+        let (title, sub) = match self.step {
+            0 => (tr("Your DualSense, ready for every game"), tr("USB or Bluetooth · Offline · No account")),
+            1 => (tr("Setting things up"), ""),
+            _ => (tr("Ready to play"), tr("Plug in your DualSense or pair it over Bluetooth. DS5 Bridge waits in the tray, bottom right.")),
         };
-        let edge: Vec<Pos2> = xs.iter().map(|&x| pos2(x, arch(x))).collect();
-        trace(&p, edge, Stroke::new(3.0, acc), done);
-
-        // ---- the step's content
-        let kk = smooth(self.step_time() / 0.35);
-        let area = Rect::from_min_max(pos2(full.left() + 48.0, top + rise + 22.0 + 10.0 * (1.0 - kk)), pos2(full.right() - 48.0, full.bottom() - 26.0));
-        let mut c = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(area.min, pos2(area.right(), area.bottom() - 56.0))));
-        c.set_opacity(kk);
-        {
-            let v = c.visuals_mut();
-            v.override_text_color = Some(PAPER_INK);
-            v.widgets.inactive.weak_bg_fill = PAPER_FIELD;
-            v.widgets.inactive.bg_fill = PAPER_FIELD;
-            v.widgets.hovered.weak_bg_fill = Color32::from_rgb(228, 225, 220);
-            v.widgets.hovered.bg_fill = Color32::from_rgb(228, 225, 220);
-            v.widgets.inactive.fg_stroke = Stroke::new(1.0, PAPER_INK);
-            v.widgets.hovered.fg_stroke = Stroke::new(1.0, PAPER_INK);
+        let th = centered(&p, title, FontId::proportional(25.0), TEXT, full.width() - 80.0, pos2(full.center().x, ty));
+        if !sub.is_empty() {
+            centered(&p, sub, FontId::proportional(14.0), MUTED, 380.0, pos2(full.center().x, ty + th + 6.0));
         }
-        c.spacing_mut().item_spacing = vec2(8.0, 6.0);
-        let title = match self.step {
-            0 => tr("Your DualSense, at home on Windows"),
-            1 => tr("Make it yours"),
-            2 => tr("One small driver"),
-            3 => tr("Setting things up"),
-            _ => tr("Ready to play"),
-        };
-        c.horizontal(|ui| {
-            ui.label(RichText::new(title).font(serif(30.0)).color(PAPER_INK));
-            ui.add_space(10.0);
-            ui.label(RichText::new(trf("Step {} of {}", &[&(self.step + 1), &STEPS])).size(12.0).color(PAPER_MUTED));
-        });
-        c.add_space(10.0);
 
-        let (mut action, mut note, mut back) = (None, String::new(), false);
+        // options, folded under the text
+        if open > 0.01 {
+            let card = Rect::from_min_size(pos2(full.left() + 50.0, ty + th + 34.0), vec2(full.width() - 100.0, 124.0 * open));
+            p.rect(card, 14.0, SURFACE, Stroke::new(1.0, LINE), StrokeKind::Inside);
+            let mut c = ui.new_child(egui::UiBuilder::new().max_rect(card.shrink(14.0)));
+            c.set_clip_rect(card);
+            c.set_opacity(open);
+            c.columns(2, |cols| {
+                let labels = [tr("Start menu shortcut"), tr("Desktop shortcut"), tr("Start with Windows"), tr("Check for updates")];
+                for (i, t) in labels.into_iter().enumerate() {
+                    check(&mut cols[i / 2], &mut self.opt[i], t);
+                }
+            });
+            c.add_space(4.0);
+            c.horizontal(|ui| {
+                ui.label(RichText::new(tr("Language")).size(13.5).color(MUTED));
+                ui.add_space(6.0);
+                self.language_picker(ui);
+            });
+            c.add_space(2.0);
+            c.label(RichText::new(trf("Installs to {}", &[&r"%LOCALAPPDATA%\Programs\DS5 Bridge"])).size(11.5).color(MUTED));
+        }
+
+        // the one button
+        let btn = Rect::from_center_size(pos2(full.center().x, full.bottom() - 118.0), vec2(280.0, 48.0));
         match self.step {
             0 => {
-                c.columns(3, |cols| {
-                    for (col, (t, d)) in cols.iter_mut().zip([
-                        (tr("USB and Bluetooth"), tr("Cable or wireless, both just work.")),
-                        (tr("Every Xbox game"), tr("Games see a normal Xbox controller.")),
-                        (tr("Private"), tr("Offline. No account. No telemetry.")),
-                    ]) {
-                        egui::Frame::NONE.fill(PAPER_FIELD).corner_radius(14.0).inner_margin(14.0).show(col, |ui| {
-                            ui.set_width(ui.available_width());
-                            ui.label(RichText::new(t).size(14.5).color(PAPER_INK));
-                            ui.label(RichText::new(d).size(12.5).color(PAPER_MUTED));
-                        });
-                    }
-                });
-                action = Some(tr("Get started"));
-                note = tr("Free and open source. Nothing leaves your PC.").to_string();
+                if pill(ui, btn, tr("Install"), None) {
+                    let o = installer::Options { start_menu: self.opt[0], desktop: self.opt[1], autostart: self.opt[2] };
+                    self.settings.check_updates = self.opt[3];
+                    self.save();
+                    self.inst = match installer::install(&o) {
+                        Ok(()) => Inst::Done,
+                        Err(e) => Inst::Failed(e),
+                    };
+                    self.show_options = false;
+                    self.go(1);
+                }
+                // fold-out link + driver state under the button
+                let link = if self.show_options { tr("Hide options") } else { tr("Options") };
+                let g = p.layout_no_wrap(link.to_string(), FontId::proportional(13.0), MUTED);
+                let r = Rect::from_center_size(pos2(full.center().x, btn.bottom() + 22.0), g.size() + vec2(28.0, 6.0));
+                let resp = ui.interact(r, ui.scope_id().with("opt"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+                let col = if resp.hovered() { TEXT } else { MUTED };
+                p.galley(pos2(r.left() + 6.0, r.center().y - g.size().y / 2.0), g, col);
+                // chevron, turning with the fold
+                let c = pos2(r.right() - 9.0, r.center().y);
+                let d = if self.show_options { -1.0 } else { 1.0 };
+                p.add(Shape::line(vec![c + vec2(-3.5, -1.8 * d), c + vec2(0.0, 1.8 * d), c + vec2(3.5, -1.8 * d)], Stroke::new(1.3, col)));
+                if resp.clicked() {
+                    self.show_options = !self.show_options;
+                    sound::click();
+                }
             }
             1 => {
-                c.columns(2, |cols| {
-                    let labels = [tr("Start menu shortcut"), tr("Desktop shortcut"), tr("Start with Windows"), tr("Check for updates")];
-                    for (i, t) in labels.into_iter().enumerate() {
-                        paper_check(&mut cols[i / 2], &mut self.opt[i], t);
-                    }
-                });
-                c.add_space(6.0);
-                c.horizontal(|ui| {
-                    ui.label(RichText::new(tr("Language")).size(14.0).color(PAPER_MUTED));
-                    ui.add_space(8.0);
-                    self.language_picker(ui);
-                });
-                action = Some(tr("Continue"));
-                // shown as %LOCALAPPDATA% so screenshots never contain a user name
-                note = trf("Installs to {}", &[&r"%LOCALAPPDATA%\Programs\DS5 Bridge"]);
-                back = true;
-            }
-            2 => {
-                c.horizontal(|ui| {
-                    if self.vigem {
-                        dot(ui, Color32::from_rgb(70, 150, 90));
-                        ui.label(RichText::new(tr("ViGEmBus driver found")).size(14.5));
-                    } else {
-                        dot(ui, Color32::from_rgb(200, 110, 70));
-                        ui.label(RichText::new(tr("ViGEmBus driver missing: needed for the virtual controller")).size(14.5));
-                    }
-                });
-                c.label(RichText::new(tr("ViGEmBus creates the virtual Xbox controller that games see. Open source, by Nefarius.")).size(13.0).color(PAPER_MUTED));
-                if !self.vigem {
-                    c.add_space(4.0);
-                    c.horizontal(|ui| {
-                        if ui.add(egui::Label::new(RichText::new(tr("Get ViGEmBus (open source)")).size(13.5).underline()).sense(Sense::click())).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                            open_url("https://github.com/nefarius/ViGEmBus/releases");
-                        }
-                        ui.add_space(10.0);
-                        if ui.add(egui::Label::new(RichText::new(tr("Check again")).size(13.5).color(PAPER_MUTED).underline()).sense(Sense::click())).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                            self.vigem = crate::win::vigem_present();
-                        }
-                    });
-                }
-                action = Some(tr("Install"));
-                note = if self.vigem { tr("No admin rights needed.") } else { tr("You can also install it later. DS5 Bridge will remind you.") }.to_string();
-                back = true;
-            }
-            3 => {
                 let t = self.step_time();
                 let failed = if let Inst::Failed(e) = &self.inst { Some(e.clone()) } else { None };
                 match failed {
                     Some(e) => {
-                        c.label(RichText::new(trf("Installation failed: {}", &[&e])).size(13.5).color(Color32::from_rgb(190, 80, 60)));
-                        action = Some(tr("Try again"));
+                        if pill(ui, btn, tr("Try again"), None) {
+                            self.inst = Inst::Ready;
+                            self.go(0);
+                        }
+                        let g = p.layout(trf("Installation failed: {}", &[&e]), FontId::proportional(12.5), ERR, 420.0);
+                        p.galley(pos2(full.center().x - g.size().x / 2.0, btn.bottom() + 12.0), g, ERR);
                     }
                     None => {
                         let msg = if t < 0.4 { tr("Copying DS5 Bridge…") } else if t < 0.8 { tr("Creating shortcuts…") } else { tr("Almost done…") };
-                        c.label(RichText::new(msg).size(14.0).color(PAPER_MUTED));
-                        if t > 1.25 && self.render_to.is_none() {
-                            self.go(4);
+                        pill(ui, btn, msg, Some(smooth(t / 1.2)));
+                        if t > 1.35 && self.render_to.is_none() {
+                            self.go(2);
                         }
                     }
                 }
             }
             _ => {
-                c.label(RichText::new(tr("Plug in your DualSense or pair it over Bluetooth. DS5 Bridge waits in the tray, bottom right.")).size(14.0));
-                action = Some(tr("Open DS5 Bridge"));
-                note = tr("No account, no telemetry. Your data stays on this PC.").to_string();
-            }
-        }
-
-        // ---- bottom row: note on the left, back + one filled pill on the right
-        let row = Rect::from_min_max(pos2(area.left(), area.bottom() - 40.0), area.max);
-        let mut right_x = row.right();
-        if let Some(label) = action {
-            let g = p.layout_no_wrap(label.to_string(), FontId::proportional(14.5), PAPER);
-            let r = Rect::from_min_max(pos2(row.right() - g.size().x - 58.0, row.top()), row.max);
-            let resp = ui.interact(r, ui.scope_id().with("go"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
-            let h = ui.ctx().animate_bool(resp.id, resp.hovered());
-            p.rect_filled(r, 20.0, mix(PAPER_INK, Color32::from_rgb(52, 50, 58), h).gamma_multiply(kk));
-            p.galley(pos2(r.left() + 22.0, r.center().y - g.size().y / 2.0), g, PAPER);
-            let a = pos2(r.right() - 22.0 + h * 3.0, r.center().y);
-            let st = Stroke::new(1.6, acc);
-            p.line_segment([a - vec2(9.0, 0.0), a + vec2(3.0, 0.0)], st);
-            p.line_segment([a + vec2(3.0, 0.0), a + vec2(-2.0, -5.0)], st);
-            p.line_segment([a + vec2(3.0, 0.0), a + vec2(-2.0, 5.0)], st);
-            right_x = r.left() - 18.0;
-            if resp.clicked() {
-                sound::click();
-                match self.step {
-                    0 | 1 => self.go(self.step + 1),
-                    2 => {
-                        let o = installer::Options { start_menu: self.opt[0], desktop: self.opt[1], autostart: self.opt[2] };
-                        self.settings.check_updates = self.opt[3];
-                        self.save();
-                        self.inst = match installer::install(&o) {
-                            Ok(()) => Inst::Done,
-                            Err(e) => Inst::Failed(e),
-                        };
-                        self.go(3);
-                    }
-                    3 => {
-                        self.inst = Inst::Ready;
-                        self.go(2);
-                    }
-                    _ => {
-                        let _ = std::process::Command::new(installer::installed_exe()).spawn();
-                        ui.ctx().send_viewport_cmd(ViewportCommand::Close);
-                    }
+                if pill(ui, btn, tr("Open DS5 Bridge"), None) {
+                    let _ = std::process::Command::new(installer::installed_exe()).spawn();
+                    ui.ctx().send_viewport_cmd(ViewportCommand::Close);
                 }
             }
         }
-        if back {
-            let g = p.layout_no_wrap(tr("Back").to_string(), FontId::proportional(13.5), PAPER_MUTED);
-            let r = Rect::from_min_max(pos2(right_x - g.size().x, row.top()), pos2(right_x, row.bottom()));
-            let resp = ui.interact(r, ui.scope_id().with("back"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
-            p.galley(pos2(r.left(), r.center().y - g.size().y / 2.0), g, if resp.hovered() { PAPER_INK } else { PAPER_MUTED });
-            right_x = r.left() - 18.0;
-            if resp.clicked() {
-                sound::click();
-                self.go(self.step - 1);
+
+        // driver status, small; when it is missing the line itself opens the download page
+        if self.step == 0 {
+            let (color, text) = if self.vigem { (OK, tr("ViGEmBus driver found")) } else { (WAIT, tr("ViGEmBus missing · get it (open source)")) };
+            let g = p.layout_no_wrap(text.to_string(), FontId::proportional(12.0), MUTED);
+            let w = g.size().x + 14.0;
+            let r = Rect::from_min_size(pos2(full.center().x - w / 2.0, full.bottom() - 56.0), vec2(w, 20.0));
+            let resp = ui.interact(r, ui.scope_id().with("vigem"), Sense::click());
+            p.circle_filled(pos2(r.left() + 3.0, r.center().y), 3.0, color);
+            p.galley(pos2(r.left() + 14.0, r.center().y - g.size().y / 2.0), g, if resp.hovered() && !self.vigem { TEXT } else { MUTED });
+            if !self.vigem && resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                open_url("https://github.com/nefarius/ViGEmBus/releases");
             }
         }
-        if !note.is_empty() {
-            let g = p.layout(note, FontId::proportional(12.5), PAPER_MUTED, (right_x - row.left()).min(380.0));
-            p.galley(pos2(row.left(), row.center().y - g.size().y / 2.0), g, PAPER_MUTED.gamma_multiply(kk));
-        }
+
+        // a fact about the app, a new one every 4 s, fading through
+        let f = facts();
+        let slot = 4.0;
+        let i = (now / slot) as usize % f.len();
+        let ph = now % slot;
+        let alpha = smooth(ph / 0.5) * (1.0 - smooth((ph - slot + 0.5) / 0.5));
+        p.line_segment([pos2(full.left() + 24.0, full.bottom() - 30.0), pos2(full.right() - 24.0, full.bottom() - 30.0)], Stroke::new(1.0, LINE));
+        p.text(pos2(full.center().x, full.bottom() - 15.0), Align2::CENTER_CENTER, format!("{} · {}", tr("Did you know?"), f[i]), FontId::proportional(12.0), MUTED.gamma_multiply(alpha.max(0.05)));
     }
 }
 
