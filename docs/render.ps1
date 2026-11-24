@@ -7,8 +7,10 @@ $exe = Join-Path $target 'release\ds5bridge.exe'
 $jobs = @(
     @('banner', 'en', 'banner'),
     @('main', 'en', 'screenshot-main'),
-    @('main', 'en', 'screenshot-xbox'),
+    @('main', 'en', 'screenshot-settings'),
+    @('main', 'en', 'screenshot-splash'),
     @('install', 'en', 'screenshot-install'),
+    @('install', 'en', 'screenshot-install-options'),
     @('main', 'de', 'screenshot-main-de'),
     @('main', 'ja', 'screenshot-main-ja')
 )

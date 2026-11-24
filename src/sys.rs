@@ -118,6 +118,7 @@ extern "system" {
     pub fn WaitForSingleObject(h: Handle, ms: u32) -> u32;
     pub fn CreateEventW(sa: *const c_void, manual: i32, initial: i32, name: *const u16) -> Handle;
     pub fn ResetEvent(h: Handle) -> i32;
+    pub fn SetEvent(h: Handle) -> i32;
     pub fn CancelIo(h: Handle) -> i32;
     pub fn GetLastError() -> u32;
     pub fn CreateMutexW(sa: *const c_void, owner: i32, name: *const u16) -> Handle;

@@ -10,11 +10,12 @@ pub struct Settings {
     pub last_check: u64,      // unix seconds
     pub accent: u32,          // 0xRRGGBB
     pub sounds: bool,
+    pub rate_limit: u32, // Hz, 0 = auto
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { lang: None, deadzone: 80, check_updates: true, last_check: 0, accent: 0xC9B37E, sounds: true }
+        Settings { lang: None, deadzone: 80, check_updates: true, last_check: 0, accent: 0xC9B37E, sounds: true, rate_limit: 0 }
     }
 }
 
@@ -39,6 +40,7 @@ pub fn load() -> Settings {
             "last_check" => s.last_check = v.parse().unwrap_or(0),
             "accent" => s.accent = u32::from_str_radix(v, 16).unwrap_or(s.accent) & 0xFF_FFFF,
             "sounds" => s.sounds = v != "0",
+            "rate" => s.rate_limit = v.parse().unwrap_or(0).min(1000),
             _ => {}
         }
     }
@@ -47,13 +49,14 @@ pub fn load() -> Settings {
 
 pub fn save(s: &Settings) {
     let text = format!(
-        "lang={}\ndeadzone={}\ncheck_updates={}\nlast_check={}\naccent={:06x}\nsounds={}\n",
+        "lang={}\ndeadzone={}\ncheck_updates={}\nlast_check={}\naccent={:06x}\nsounds={}\nrate={}\n",
         s.lang.as_deref().unwrap_or(""),
         s.deadzone,
         s.check_updates as u8,
         s.last_check,
         s.accent,
-        s.sounds as u8
+        s.sounds as u8,
+        s.rate_limit
     );
     let _ = std::fs::create_dir_all(dir());
     let _ = std::fs::write(file(), text);

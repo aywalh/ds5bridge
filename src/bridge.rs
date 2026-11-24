@@ -2,7 +2,7 @@
 //! process and reports through the shared block.
 
 use crate::decode::{self, decode, Pad};
-use crate::ipc::Shared;
+use crate::ipc::{self, Shared};
 use crate::win::{DualSense, VirtualX360};
 use std::sync::atomic::Ordering::Relaxed;
 use std::time::{Duration, Instant};
@@ -44,11 +44,17 @@ fn serve(sh: &Shared, pad: &VirtualX360) {
         let bt = ds.bluetooth;
         sh.controller.store(if bt { 2 } else { 1 }, Relaxed);
         sh.exclusive.store(ds.exclusive as u32, Relaxed);
+        ipc::signal();
         let (mut n, mut fresh, mut t) = (0u32, 0u32, Instant::now());
         let (mut last_at, mut last_ts, mut last_pad) = (None::<Instant>, None::<u32>, None::<Pad>);
         let (mut gap_sum, mut gap_sq, mut gaps) = (0f32, 0f32, 0u32);
+        // optional rate limit: hold changes back and send the newest one when its turn comes
+        let (mut pending, mut last_sent) = (None::<Pad>, Instant::now());
         while !stop(sh) {
-            match ds.read(250) {
+            let limit = sh.rate_limit.load(Relaxed);
+            let gap = if limit > 0 { Duration::from_micros(1_000_000 / limit as u64) } else { Duration::ZERO };
+            let wait = if pending.is_some() { gap.saturating_sub(last_sent.elapsed()).as_millis().max(1) as u32 } else { 250 };
+            match ds.read(wait) {
                 Err(()) => break, // controller disconnected
                 Ok(None) => {}
                 Ok(Some(r)) => {
@@ -68,15 +74,19 @@ fn serve(sh: &Shared, pad: &VirtualX360) {
                     let dz = sh.deadzone.load(Relaxed) as f32 / 1000.0;
                     if let Some(p) = decode(r, bt, dz) {
                         n += 1;
-                        if last_pad != Some(p) {
-                            // only talk to the driver when something changed: keeps CPU near zero
-                            if pad.send(&p).is_err() {
-                                sh.error.store(crate::win::ERR_SEND, Relaxed);
-                            }
-                            sh.set_pad(&p);
-                            last_pad = Some(p);
-                        }
+                        // only talk to the driver when something changed: keeps CPU near zero
+                        pending = if last_pad != Some(p) { Some(p) } else { None };
                     }
+                }
+            }
+            if let Some(p) = pending {
+                if last_sent.elapsed() >= gap {
+                    if pad.send(&p).is_err() {
+                        sh.error.store(crate::win::ERR_SEND, Relaxed);
+                    }
+                    sh.set_pad(&p);
+                    ipc::signal();
+                    (last_pad, pending, last_sent) = (Some(p), None, Instant::now());
                 }
             }
             if t.elapsed() >= Duration::from_secs(1) {
@@ -93,6 +103,7 @@ fn serve(sh: &Shared, pad: &VirtualX360) {
         let _ = pad.send(&Pad::default()); // release everything, no stuck stick
         sh.set_pad(&Pad::default());
         sh.controller.store(0, Relaxed);
+        ipc::signal();
         for a in [&sh.rate, &sh.fresh, &sh.interval, &sh.jitter] {
             a.store(0, Relaxed);
         }

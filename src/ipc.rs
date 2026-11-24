@@ -10,6 +10,18 @@ pub const BG_MUTEX: &str = "Local\\DS5Bridge.Background";
 pub const UI_MUTEX: &str = "Local\\DS5Bridge.Window";
 const MAPPING: &str = "Local\\DS5Bridge.State.v1";
 
+/// Auto-reset event the bridge sets whenever the pad changes, so the window redraws at once
+/// instead of polling.
+pub fn changed_event() -> crate::sys::Handle {
+    static EV: std::sync::OnceLock<crate::sys::Handle> = std::sync::OnceLock::new();
+    *EV.get_or_init(|| unsafe { crate::sys::CreateEventW(std::ptr::null(), 0, 0, crate::sys::wide("Local\\DS5Bridge.Changed").as_ptr()) })
+}
+
+/// Wake the window (costs nothing when nobody waits).
+pub fn signal() {
+    unsafe { crate::sys::SetEvent(changed_event()) };
+}
+
 #[repr(C)]
 pub struct Shared {
     // bridge -> UI
@@ -30,6 +42,7 @@ pub struct Shared {
     pub paused: AtomicU32,
     pub quit: AtomicU32,
     pub lang: AtomicU32,
+    pub rate_limit: AtomicU32, // Hz the game gets at most; 0 = as fast as the controller sends
 }
 
 /// Snapshot for drawing.
@@ -100,5 +113,20 @@ pub fn open() -> &'static Shared {
             return Box::leak(Box::new(std::mem::zeroed::<Shared>()));
         }
         &*(p as *const Shared)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The bridge's signal reaches a waiting window.
+    #[test]
+    fn change_event_wakes_the_window() {
+        use crate::sys::WaitForSingleObject;
+        let ev = super::changed_event();
+        assert_ne!(ev, 0);
+        assert_eq!(unsafe { WaitForSingleObject(ev, 0) }, 258); // nothing yet: timeout
+        super::signal();
+        assert_eq!(unsafe { WaitForSingleObject(ev, 0) }, 0); // signalled
+        assert_eq!(unsafe { WaitForSingleObject(ev, 0) }, 258); // auto-reset
     }
 }

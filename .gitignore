@@ -3,3 +3,4 @@
 *.exe.sha256
 tools/*.log
 *.png.tmp
+/DS5Bridge-new.exe

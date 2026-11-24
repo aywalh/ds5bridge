@@ -148,6 +148,7 @@ pub fn run_background(show: bool) {
     sh.quit.store(0, Relaxed);
     sh.paused.store(0, Relaxed);
     sh.deadzone.store(s.deadzone, Relaxed);
+    sh.rate_limit.store(s.rate_limit, Relaxed);
     sh.lang.store(crate::i18n::cur() as u32, Relaxed);
 
     let bridge = std::thread::spawn(|| crate::bridge::run(shared()));

@@ -12,29 +12,43 @@
 **DS5 Bridge** lets you use a **PS5 DualSense** as an **Xbox controller** on Windows, over **USB or Bluetooth**.
 Games see a normal Xbox 360 controller (XInput), so the DualSense works everywhere an Xbox pad works.
 
-It is small, fast and private: one 5 MB exe, written in Rust, no account, no telemetry, fully offline.
+One small exe, written in Rust. No account, no telemetry, fully offline.
+
+## Why this exists
+
+I plugged a PS5 controller into my PC and it just didn't work in my games. Over Bluetooth it kept
+connecting and dropping. The usual fixes meant big launchers running in the background, accounts or
+tools that phone home. I didn't want any of that.
+
+So I built the smallest thing that works. DS5 Bridge reads the DualSense directly through Windows'
+own HID API and hands every button, stick and trigger to a virtual Xbox controller. Games then simply
+see an Xbox pad. It runs quietly in the tray, starts with Windows if you want, and never touches
+the internet except to ask GitHub whether there is a new version (you can turn that off).
 
 ## Features
 
-- **USB and Bluetooth.** Over Bluetooth it switches the DualSense to its full report mode.
-- **Lives in the tray.** Closing the window keeps the bridge running in the background
-  at about **2–3 MB of RAM** and **well under 1 % CPU**.
-- **Live view.** A drawn DualSense (or, one click away, the Xbox controller games see) that lights
-  up with every button, stick and trigger,
-  plus measured polling rate, latency jitter and how many reports really carry new data.
-- **Stick deadzone** slider against drift, with soft detent clicks you can turn off.
-- **Your colours:** six calm accent presets (Champagne, Sage, Slate, Rosé, Bronze, Ivory) or any colour you like.
-- **Installer, updater and uninstaller** built in, per user, no admin rights.
-- **Updates you can trust:** a new version is only installed if its SHA-256 matches the checksum
+- **USB and Bluetooth.** Over Bluetooth it switches the DualSense into its full report mode.
+- **Live preview.** A drawn DualSense that lights up with every button, stick and trigger you press.
+- **Polling rate you can choose:** Auto (every report, about 250 Hz over USB and 600 Hz over
+  Bluetooth) or a fixed 500, 250 or 125 Hz, with the measured rate and jitter shown live.
+- **Stick deadzone** slider against drift, with soft detent clicks (can be turned off).
+- **Your colours:** six calm accent presets or any colour you pick.
+- **Lives in the tray.** Closing the window keeps the bridge running at about **2–3 MB of RAM**
+  and **well under 1 % CPU**.
+- **A calm installer** (one step per page), plus updater and uninstaller. Per user, no admin rights.
+- **Updates you can trust:** a new version is installed only if its SHA-256 matches the checksum
   published on GitHub.
 - **8 languages:** English, Deutsch, 日本語, 简体中文, 한국어, Tiếng Việt, Filipino, العربية.
 
 ## Screenshots
 
 <p align="center">
-  <img src="docs/screenshot-main.png" alt="Main window" width="32%">
-  <img src="docs/screenshot-install.png" alt="Installer" width="32%">
-  <img src="docs/screenshot-xbox.png" alt="Xbox view: what games see" width="32%">
+  <img src="docs/screenshot-main.png" alt="Main window with live preview and polling rate" width="49%">
+  <img src="docs/screenshot-settings.png" alt="Settings: language, sounds, accent colours" width="49%">
+</p>
+<p align="center">
+  <img src="docs/screenshot-install.png" alt="Installer: welcome" width="49%">
+  <img src="docs/screenshot-install-options.png" alt="Installer: options" width="49%">
 </p>
 
 ## Install
@@ -42,13 +56,16 @@ It is small, fast and private: one 5 MB exe, written in Rust, no account, no tel
 1. Install the **[ViGEmBus driver](https://github.com/nefarius/ViGEmBus/releases)** (open source, by Nefarius).
    It is what creates the virtual Xbox controller. DS5 Bridge tells you if it is missing.
 2. Download **`DS5Bridge.exe`** from the [latest release](https://github.com/aywalh/ds5bridge/releases/latest) and run it.
-3. Pick your options in the installer and click **Install**. Done. DS5 Bridge starts in the tray (bottom right).
+3. Pick your options in the installer and click **Install**. DS5 Bridge starts in the tray (bottom right).
 
 The exe is not code-signed, so Windows SmartScreen may warn the first time: *More info → Run anyway*.
 You can check the download against `DS5Bridge.exe.sha256` from the same release.
 
-To remove it: *Settings → Apps → Installed apps → DS5 Bridge → Uninstall*. That removes the app,
-its shortcuts, autostart entry and settings.
+**Updates:** DS5 Bridge checks GitHub at most every few hours (or when you click *Check now* under
+*About*). If a new release is there, *Update now* downloads it, verifies the SHA-256 and restarts.
+
+**Remove:** *Settings → Apps → Installed apps → DS5 Bridge → Uninstall*. That removes the app,
+its shortcuts, the autostart entry and its settings.
 
 **Portable:** run `DS5Bridge.exe --portable` to use it without installing.
 
@@ -57,9 +74,9 @@ its shortcuts, autostart entry and settings.
 DS5 Bridge has **no telemetry, no account and no analytics**. It reads the controller locally and
 talks to a local driver. That's all.
 
-The only network access is the **update check**, and only while it is enabled (you can turn it off
-in the installer or in the app): it asks `api.github.com` for the newest release of this repository
-and, if you click *Update now*, downloads it from GitHub. No identifiers are sent.
+The only network access is the **update check**, and only while it is enabled: it asks
+`api.github.com` for the newest release of this repository and, if you click *Update now*,
+downloads it from GitHub. No identifiers are sent.
 
 Settings are stored in `%APPDATA%\DS5 Bridge\settings.ini`. The app is installed to
 `%LOCALAPPDATA%\Programs\DS5 Bridge`.
@@ -71,22 +88,23 @@ Measured with the built-in live view on a standard DualSense:
 | Connection | Reports per second | Typical interval | Jitter |
 |---|---|---|---|
 | USB | 250 Hz | 4.00 ms | ~0.05 ms |
-| Bluetooth | ~590 Hz | ~1.25 ms (median) | ~1.8 ms |
+| Bluetooth | ~590 Hz | ~1.7 ms | ~1.8 ms |
 
-Over USB the DualSense asks Windows to poll it every 4 ms (`bInterval 6` on a high-speed port).
-Going higher over USB needs a kernel filter driver that rewrites that value; DS5 Bridge deliberately
-does not install drivers. Bluetooth delivers more updates without anything extra, but less evenly.
-The **New data** tile counts only reports with a new timestamp from the controller itself, so you can
-see whether a higher rate really brings fresher input.
+Over USB the DualSense itself asks Windows to poll it every 4 ms. Going faster over USB (1 ms)
+needs a kernel filter driver that rewrites that value. DS5 Bridge deliberately does not install
+drivers, so *Auto* is the fastest it gets without one. Lower fixed rates are there if you want them.
+The **New data** row counts only reports with a new timestamp from the controller, so you can see
+whether a higher rate really brings fresher input.
 
 ## How it works
 
 - `DS5Bridge.exe --background` is the tray service: plain Win32, no UI toolkit loaded.
   It reads the DualSense through the Windows HID API and feeds a virtual Xbox 360 controller through
   the ViGEmBus driver's own IOCTL protocol (no extra DLL). It only talks to the driver when the
-  input actually changed.
+  input actually changed, and wakes the window the moment it does.
 - The window is a separate process (`--ui`, built with [egui](https://github.com/emilk/egui)).
   It reads the live state from a small shared-memory block and exits completely when closed.
+- The controller, the logo and the icon are drawn in code. No images from anyone else.
 - Everything else is the Rust standard library and Windows' own DLLs. The only crate is `eframe`.
 
 ## Build from source
@@ -98,6 +116,9 @@ cargo build --release
 
 The exe is `target\release\ds5bridge.exe`. `docs\render.ps1` redraws the README images from the app
 itself (with demo values).
+
+**Releasing:** bump `version` in `Cargo.toml`, then push a tag like `v1.0.1`. GitHub Actions builds
+the exe, publishes it with its SHA-256, and every installed copy offers the update.
 
 ## Translations
 

@@ -17,13 +17,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 // warm graphite, ivory text, one quiet accent the user picks
-const BG: Color32 = Color32::from_rgb(15, 15, 17);
-const SURFACE: Color32 = Color32::from_rgb(21, 21, 24);
+const BG: Color32 = Color32::from_rgb(5, 5, 7);
+const SURFACE: Color32 = Color32::from_rgb(15, 16, 19);
 const SURFACE2: Color32 = Color32::from_rgb(31, 31, 35);
 const HOVER: Color32 = Color32::from_rgb(44, 44, 49);
-const LINE: Color32 = Color32::from_rgb(38, 38, 43);
-const TEXT: Color32 = Color32::from_rgb(232, 229, 223);
-const MUTED: Color32 = Color32::from_rgb(130, 127, 121);
+const LINE: Color32 = Color32::from_rgb(32, 34, 40);
+const TEXT: Color32 = Color32::from_rgb(242, 244, 248);
+const MUTED: Color32 = Color32::from_rgb(137, 142, 153);
 const OK: Color32 = Color32::from_rgb(140, 184, 146);
 const WAIT: Color32 = Color32::from_rgb(212, 180, 118);
 const ERR: Color32 = Color32::from_rgb(210, 124, 98);
@@ -162,7 +162,7 @@ fn launch(mode: Mode, render_to: Option<std::path::PathBuf>) {
     }
     let size = match mode {
         Mode::Main => [860.0, 560.0],
-        Mode::Install => [560.0, 600.0],
+        Mode::Install => [880.0, 560.0],
         Mode::Uninstall => [460.0, 300.0],
         Mode::Banner => [1280.0, 640.0],
     };
@@ -185,10 +185,13 @@ fn launch(mode: Mode, render_to: Option<std::path::PathBuf>) {
             if render_to.is_some() {
                 app.demo = Some(demo_status());
                 app.vigem = true;
-                // a file name with "xbox" in it shows the Xbox view (README screenshot)
-                if render_to.as_ref().is_some_and(|p| p.to_string_lossy().contains("xbox")) {
-                    app.skin = Skin::Xbox;
+                // a file name with "settings" in it shows the Settings tab (README screenshot)
+                if render_to.as_ref().is_some_and(|p| p.to_string_lossy().contains("settings")) {
+                    app.tab = Tab::Settings;
                 }
+                // "install-options" / "install-done": that installer page
+                let name = render_to.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+                app.step = if name.contains("options") { 1 } else if name.contains("done") { 4 } else { 0 };
                 app.render_to = render_to;
                 sound::ON.store(false, Relaxed);
             }
@@ -215,6 +218,12 @@ fn set_fonts(ctx: &egui::Context) {
         list.insert(0, f);
     }
     list.extend(cjk.into_iter().chain([ar]).flatten());
+    // serif titles (installer): Georgia, then everything above for other scripts
+    let mut serif = list.clone();
+    if load("serif", "georgia.ttf").is_some() {
+        serif.insert(0, "serif".into());
+    }
+    fonts.families.insert(FontFamily::Name("serif".into()), serif);
     ctx.set_fonts(fonts);
 }
 
@@ -271,7 +280,6 @@ enum Inst {
 struct App {
     mode: Mode,
     tab: Tab,
-    skin: Skin,
     sh: &'static Shared,
     settings: Settings,
     deadzone: f32,
@@ -284,11 +292,14 @@ struct App {
     logo: egui::TextureHandle,
     opt: [bool; 4], // installer: start menu, desktop, autostart, updates
     inst: Inst,
+    step: usize, // installer page
+    step_at: std::time::Instant,
     vigem: bool,
     removed: bool,
     demo: Option<Status>, // --render: fixed values instead of the live bridge
     render_to: Option<std::path::PathBuf>,
     frames: u32,
+    launched: std::time::Instant,
 }
 
 /// What the README screenshots show: Bluetooth, cross + R1 pressed, R2 half way, left stick pushed.
@@ -310,6 +321,16 @@ fn demo_status() -> Status {
 
 impl App {
     fn new(ctx: &egui::Context, mode: Mode, ui_mutex: Handle) -> Self {
+        if mode == Mode::Main {
+            // redraw the moment the controller changes; no polling, sleeps while nothing happens
+            let ctx = ctx.clone();
+            let ev = ipc::changed_event();
+            std::thread::spawn(move || loop {
+                if unsafe { WaitForSingleObject(ev, 1000) } == 0 {
+                    ctx.request_repaint();
+                }
+            });
+        }
         let settings = settings::load();
         ACCENT.store(settings.accent, Relaxed);
         sound::ON.store(settings.sounds, Relaxed);
@@ -319,7 +340,6 @@ impl App {
         let app = App {
             mode,
             tab: Tab::Controller,
-            skin: Skin::DualSense,
             sh: ipc::open(),
             deadzone: settings.deadzone as f32 / 1000.0,
             autostart: installer::autostart_enabled(),
@@ -331,11 +351,14 @@ impl App {
             logo,
             opt: [true, false, true, settings.check_updates],
             inst: Inst::Ready,
+            step: 0,
+            step_at: std::time::Instant::now(),
             vigem: crate::win::vigem_present(),
             removed: false,
             demo: None,
             render_to: None,
             frames: 0,
+            launched: std::time::Instant::now(),
             settings,
         };
         if mode == Mode::Main && app.settings.check_updates && settings::now().saturating_sub(app.settings.last_check) > 6 * 3600 {
@@ -447,6 +470,17 @@ impl eframe::App for App {
         if self.mode == Mode::Banner {
             return self.banner(ui, full);
         }
+        if self.mode == Mode::Install {
+            self.installer(ui, full);
+        } else {
+            self.window(ui, full);
+        }
+        self.after_frame(ui, full);
+    }
+}
+
+impl App {
+    fn window(&mut self, ui: &mut egui::Ui, full: Rect) {
         ui.painter().rect(full, RADIUS, BG, Stroke::new(1.0, LINE), StrokeKind::Inside);
         let tab = if self.mode == Mode::Main { Some(&mut self.tab) } else { None };
         title_bar(ui, full, &self.logo, tab);
@@ -457,11 +491,11 @@ impl eframe::App for App {
             let content = Rect::from_min_max(full.min + vec2(32.0, TITLE_H + 24.0), full.max - vec2(32.0, 24.0));
             let mut cui = ui.new_child(egui::UiBuilder::new().max_rect(content));
             cui.spacing_mut().item_spacing = vec2(10.0, 10.0);
-            egui::ScrollArea::vertical().auto_shrink(false).show(&mut cui, |ui| match self.mode {
-                Mode::Install => self.install_view(ui),
-                _ => self.uninstall_view(ui),
-            });
+            egui::ScrollArea::vertical().auto_shrink(false).show(&mut cui, |ui| self.uninstall_view(ui));
         }
+    }
+
+    fn after_frame(&mut self, ui: &mut egui::Ui, full: Rect) {
 
         // repaint smoothly only while something changes; otherwise nearly no CPU
         let s = self.sh.status();
@@ -471,6 +505,16 @@ impl eframe::App for App {
         };
         let changed = s != self.last;
         self.last = s;
+        // start screen: the mark draws itself, then the window fades in from behind it
+        // (--render shows it frozen mid-way only when the file name asks for "splash")
+        let shot = self.render_to.as_ref().map(|p| p.to_string_lossy().contains("splash"));
+        let t = match shot { None => Some(self.launched.elapsed().as_secs_f32()), Some(true) => Some(0.40), Some(false) => None };
+        if let Some(t) = t {
+            let p = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("splash")));
+            if splash(&p, full, t) && shot.is_none() {
+                ui.ctx().request_repaint();
+            }
+        }
         ui.ctx().request_repaint_after(Duration::from_millis(if changed || busy { 16 } else { 250 }));
     }
 }
@@ -515,7 +559,7 @@ impl App {
         let panel = Rect::from_min_size(pos2(full.right() - 620.0, 110.0), vec2(540.0, 420.0));
         p.rect(panel, 14.0, SURFACE, Stroke::new(1.0, LINE), StrokeKind::Inside);
         p.text(panel.min + vec2(0.0, -26.0), Align2::LEFT_TOP, "LIVE PREVIEW", FontId::proportional(13.0), MUTED);
-        controller(&p, panel.shrink(30.0), &self.demo.clone().unwrap_or_default(), Skin::DualSense);
+        crate::ps5::paint(&p, panel.shrink(30.0), &self.demo.clone().unwrap_or_default());
     }
 }
 
@@ -525,6 +569,74 @@ impl Drop for App {
             unsafe { CloseHandle(self.ui_mutex) };
         }
     }
+}
+
+// -------------------------------------------------------------- brand ---
+
+/// How long the mark takes to draw itself.
+const DRAW_SECONDS: f32 = 0.30;
+/// Start screen length (the mark draws, then the screen fades out).
+const SPLASH_SECONDS: f32 = 0.67;
+const FADE_FROM: f32 = 0.42;
+
+fn smooth(v: f32) -> f32 {
+    let t = v.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// The first `progress` (0..1) of a polyline, with round ends.
+fn trace(p: &Painter, mut pts: Vec<Pos2>, stroke: Stroke, progress: f32) {
+    if progress < 1.0 {
+        let total: f32 = pts.windows(2).map(|w| w[0].distance(w[1])).sum();
+        let mut left = total * progress;
+        for i in 1..pts.len() {
+            let len = pts[i - 1].distance(pts[i]);
+            if left < len {
+                pts[i] = pts[i - 1].lerp(pts[i], left / len);
+                pts.truncate(i + 1);
+                break;
+            }
+            left -= len;
+        }
+    }
+    if pts.len() > 1 {
+        p.circle_filled(pts[0], stroke.width * 0.5, stroke.color);
+        p.circle_filled(*pts.last().unwrap(), stroke.width * 0.5, stroke.color);
+        p.add(Shape::line(pts, stroke));
+    }
+}
+
+/// The DS5 Bridge mark: one line, up, over an arch and down (a controller's top edge), then two
+/// dots for the sticks. 40 x 40 grid, `scale` 1.0 = 40 points; `seconds` since it began drawing.
+fn mark(p: &Painter, center: Pos2, scale: f32, ink: Color32, dots: Color32, seconds: f32) {
+    let draw = smooth(seconds / DRAW_SECONDS);
+    if draw <= 0.0 {
+        return;
+    }
+    let o = center - vec2(20.0, 20.0) * scale;
+    let mut pts = vec![pos2(6.0, 34.0)];
+    for i in 0..=32 {
+        let a = std::f32::consts::PI * (1.0 + i as f32 / 32.0);
+        pts.push(pos2(20.0 + 14.0 * a.cos(), 20.0 + 14.0 * a.sin()));
+    }
+    pts.push(pos2(34.0, 34.0));
+    trace(p, pts.into_iter().map(|q| o + q.to_vec2() * scale).collect(), Stroke::new(5.8 * scale, ink), draw);
+    let pop = smooth((seconds - DRAW_SECONDS * 0.8) / 0.12);
+    for x in [15.0, 25.0] {
+        p.circle_filled(o + vec2(x, 29.0) * scale, 2.7 * scale * pop, dots);
+    }
+}
+
+/// Start screen over the whole window at `seconds` after launch; false once it is gone.
+fn splash(p: &Painter, full: Rect, seconds: f32) -> bool {
+    if seconds >= SPLASH_SECONDS {
+        return false;
+    }
+    let fade = 1.0 - smooth((seconds - FADE_FROM) / (SPLASH_SECONDS - FADE_FROM));
+    p.rect_filled(full, RADIUS, BG.gamma_multiply(fade));
+    let pop = smooth(seconds / 0.2);
+    mark(p, full.center(), 1.6 * (0.92 + 0.08 * pop), TEXT.gamma_multiply(pop * fade), accent().gamma_multiply(fade), seconds - 0.05);
+    true
 }
 
 // ------------------------------------------------------------- chrome ---
@@ -706,30 +818,12 @@ impl App {
         // live preview
         let p = ui.painter().clone();
         p.text(right.min + vec2(0.0, 3.0), Align2::LEFT_TOP, tr("LIVE PREVIEW"), FontId::proportional(11.5), MUTED);
-        // DualSense = what you hold, Xbox = what games see
-        let mut x = right.right();
-        for (skin, name) in [(Skin::Xbox, "Xbox"), (Skin::DualSense, "DualSense")] {
-            let g = p.layout_no_wrap(name.to_string(), FontId::proportional(12.0), TEXT);
-            let r = Rect::from_min_max(pos2(x - g.size().x - 18.0, right.top()), pos2(x, right.top() + 20.0));
-            let resp = ui.interact(r, ui.scope_id().with(("skin", name)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
-            if resp.clicked() && self.skin != skin {
-                self.skin = skin;
-                sound::click();
-            }
-            let active = self.skin == skin;
-            if active {
-                p.rect_filled(r, 6.0, SURFACE2);
-            }
-            p.galley(r.center() - g.size() / 2.0, g, if active || resp.hovered() { TEXT } else { MUTED });
-            x = r.left() - 4.0;
-        }
         let panel = Rect::from_min_max(right.min + vec2(0.0, 24.0), right.max - vec2(0.0, 26.0));
-        p.rect(panel, 12.0, SURFACE, Stroke::new(1.0, LINE), StrokeKind::Inside);
-        controller(&p, panel.shrink(10.0), &s, self.skin);
+        p.rect(panel, 20.0, SURFACE, Stroke::new(1.0, LINE), StrokeKind::Inside);
+        let preview = panel.shrink(14.0);
+        crate::ps5::paint(&p, preview, &s);
         let hint = if s.controller == 0 {
             tr("Connect a DualSense to see it here.")
-        } else if self.skin == Skin::Xbox {
-            tr("This is what games see.")
         } else {
             tr("Press any button to test it.")
         };
@@ -857,6 +951,23 @@ impl App {
                 self.save();
             }
         });
+        field(ui, tr("Polling rate"), |ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            for (hz, label) in [(0, tr("Auto").to_string()), (500, "500 Hz".into()), (250, "250 Hz".into()), (125, "125 Hz".into())] {
+                let on = self.settings.rate_limit == hz;
+                let b = egui::Button::new(RichText::new(label).size(12.5).color(if on { on_accent(accent()) } else { TEXT }))
+                    .fill(if on { accent() } else { SURFACE2 })
+                    .corner_radius(7.0)
+                    .min_size(vec2(0.0, 26.0));
+                if ui.add(b).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() && !on {
+                    sound::click();
+                    self.settings.rate_limit = hz;
+                    self.sh.rate_limit.store(hz, Relaxed);
+                    self.save();
+                }
+            }
+        });
+        ui.label(RichText::new(tr("Auto passes on every report: about 250 Hz over USB, about 600 Hz over Bluetooth. More over USB needs a driver.")).size(12.0).color(MUTED));
         if s.controller != 0 && !s.exclusive {
             ui.add_space(4.0);
             ui.label(RichText::new(tr("Another program (e.g. Steam) also reads the DualSense. Games may see double input.")).size(12.0).color(MUTED));
@@ -1015,77 +1126,6 @@ impl App {
 
     // ------------------------------------------------------- installer ---
 
-    fn install_view(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            let (rect, _) = ui.allocate_exact_size(vec2(52.0, 52.0), Sense::hover());
-            ui.painter().image(self.logo.id(), rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
-            ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing.y = 2.0;
-                ui.label(RichText::new(tr("Welcome to DS5 Bridge")).size(22.0));
-                ui.label(RichText::new(trf("Version {}", &[&env!("CARGO_PKG_VERSION")])).size(12.5).color(MUTED));
-            });
-        });
-        ui.label(RichText::new(tr("Use your PS5 DualSense as an Xbox controller on Windows, over USB or Bluetooth. Runs fully offline.")).size(13.0).color(MUTED));
-
-        match &self.inst {
-            Inst::Done => {
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    dot(ui, OK);
-                    ui.label(RichText::new(tr("Installed")).size(16.0));
-                });
-                ui.label(RichText::new(tr("DS5 Bridge now lives in the tray (bottom right). Closing the window keeps it running.")).size(13.0).color(MUTED));
-                ui.add_space(8.0);
-                if primary(ui, tr("Start DS5 Bridge")).clicked() {
-                    let _ = std::process::Command::new(installer::installed_exe()).spawn();
-                    ui.ctx().send_viewport_cmd(ViewportCommand::Close);
-                }
-                return;
-            }
-            Inst::Failed(e) => {
-                ui.label(RichText::new(trf("Installation failed: {}", &[e])).color(ERR));
-            }
-            Inst::Ready => {}
-        }
-
-        caption(ui, tr("OPTIONS"));
-        let labels = [tr("Start menu shortcut"), tr("Desktop shortcut"), tr("Start with Windows"), tr("Check for updates")];
-        for (i, t) in labels.into_iter().enumerate() {
-            check(ui, &mut self.opt[i], t);
-        }
-        ui.add_space(4.0);
-        field(ui, tr("Language"), |ui| self.language_picker(ui));
-
-        caption(ui, tr("DRIVER"));
-        ui.horizontal(|ui| {
-            if self.vigem {
-                dot(ui, OK);
-                ui.label(RichText::new(tr("ViGEmBus driver found")).size(13.5));
-            } else {
-                dot(ui, ERR);
-                ui.label(RichText::new(tr("ViGEmBus driver missing: needed for the virtual controller")).size(13.5).color(ERR));
-            }
-        });
-        if !self.vigem {
-            link(ui, tr("Get ViGEmBus (open source)"), "https://github.com/nefarius/ViGEmBus/releases");
-        }
-        ui.add_space(6.0);
-        ui.label(RichText::new(tr("No account, no telemetry. Your data stays on this PC.")).size(12.0).color(MUTED));
-        // shown as %LOCALAPPDATA% so screenshots never contain a user name
-        ui.label(RichText::new(trf("Installs to {}", &[&r"%LOCALAPPDATA%\Programs\DS5 Bridge"])).size(11.5).color(MUTED));
-        ui.add_space(6.0);
-        if primary(ui, tr("Install")).clicked() {
-            let o = installer::Options { start_menu: self.opt[0], desktop: self.opt[1], autostart: self.opt[2] };
-            self.settings.check_updates = self.opt[3];
-            self.save();
-            self.inst = match installer::install(&o) {
-                Ok(()) => Inst::Done,
-                Err(e) => Inst::Failed(e),
-            };
-            self.vigem = crate::win::vigem_present();
-        }
-    }
-
     fn uninstall_view(&mut self, ui: &mut egui::Ui) {
         if self.removed {
             ui.label(RichText::new(tr("DS5 Bridge was removed.")).size(20.0));
@@ -1106,391 +1146,301 @@ impl App {
     }
 }
 
-// --------------------------------------------------------- controller ---
+// ------------------------------------------------------------ installer ---
 //
-// Both controllers are drawn in code on a 420 x 280 grid (no images from anyone else): the
-// outline is a mirrored chain of curves, filled with a triangulated mesh, then traced with a thin line.
+// A two-part card like a printed page: big serif title, the step's content and exactly one action
+// on the left; the controller on its blue halo on the right; a torn paper edge in between.
 
-#[derive(Clone, Copy, PartialEq)]
-pub enum Skin {
-    DualSense,
-    Xbox,
+const PAPER: Color32 = Color32::from_rgb(250, 249, 246);
+const PAPER_INK: Color32 = Color32::from_rgb(22, 21, 26);
+const PAPER_MUTED: Color32 = Color32::from_rgb(132, 128, 138);
+const PAPER_FIELD: Color32 = Color32::from_rgb(238, 236, 232);
+const SCENE: Color32 = Color32::from_rgb(12, 13, 17);
+const STEPS: usize = 5;
+const CARD_R: u8 = 22;
+
+fn serif(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Name("serif".into()))
 }
 
-type Pt = (f32, f32);
-
-/// Points along a cubic curve from `a` (excluded) to `d`.
-fn cubic(out: &mut Vec<Pt>, a: Pt, b: Pt, c: Pt, d: Pt) {
-    for i in 1..=12 {
-        let t = i as f32 / 12.0;
-        let u = 1.0 - t;
-        let f = |a: f32, b: f32, c: f32, d: f32| u * u * u * a + 3.0 * u * u * t * b + 3.0 * u * t * t * c + t * t * t * d;
-        out.push((f(a.0, b.0, c.0, d.0), f(a.1, b.1, c.1, d.1)));
+/// Checkbox for the paper side.
+fn paper_check(ui: &mut egui::Ui, on: &mut bool, label: &str) -> Response {
+    let g = ui.painter().layout_no_wrap(label.to_string(), FontId::proportional(14.0), PAPER_INK);
+    let (rect, mut resp) = ui.allocate_exact_size(vec2(30.0 + g.size().x, 28.0), Sense::click());
+    if resp.clicked() {
+        *on = !*on;
+        sound::click();
+        resp.mark_changed();
     }
-}
-
-/// Left half from the top centre down to the bottom centre as curves [control, control, end];
-/// returns the whole outline, the right half mirrored.
-fn mirrored(start: Pt, segs: &[[Pt; 3]]) -> Vec<Pt> {
-    let mut l = vec![start];
-    for s in segs {
-        let cur = *l.last().unwrap();
-        cubic(&mut l, cur, s[0], s[1], s[2]);
+    let t = ui.ctx().animate_bool(resp.id, *on);
+    let b = Rect::from_center_size(pos2(rect.left() + 9.0, rect.center().y), vec2(18.0, 18.0));
+    let p = ui.painter();
+    p.rect_filled(b, 6.0, mix(PAPER, PAPER_INK, t));
+    p.rect_stroke(b, 6.0, Stroke::new(1.5, mix(PAPER_MUTED, PAPER_INK, t)), StrokeKind::Inside);
+    if t > 0.0 {
+        let c = b.center();
+        p.add(Shape::line(vec![c + vec2(-4.5, 0.5), c + vec2(-1.3, 3.5), c + vec2(4.5, -3.2)], Stroke::new(1.8, PAPER.gamma_multiply(t))));
     }
-    let n = l.len();
-    let mut full = l.clone();
-    full.extend(l[1..n - 1].iter().rev().map(|&(x, y)| (420.0 - x, y)));
-    full
+    p.galley(pos2(b.right() + 11.0, rect.center().y - g.size().y / 2.0), g, PAPER_INK);
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-/// Ear clipping: triangle indices for a simple (non-self-intersecting) polygon.
-fn triangulate(pts: &[Pt]) -> Vec<u32> {
-    let cross = |a: Pt, b: Pt, c: Pt| (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0);
-    let area: f32 = (0..pts.len()).map(|i| cross((0.0, 0.0), pts[i], pts[(i + 1) % pts.len()])).sum();
-    let s = area.signum();
-    let mut idx: Vec<usize> = (0..pts.len()).collect();
-    let mut tris = vec![];
-    while idx.len() > 3 {
-        let n = idx.len();
-        let tri = |i: usize| (idx[(i + n - 1) % n], idx[i], idx[(i + 1) % n]);
-        let ear = (0..n).find(|&i| {
-            let (a, b, c) = tri(i);
-            let (a, b, c) = (pts[a], pts[b], pts[c]);
-            cross(a, b, c) * s > 1e-6
-                && !idx.iter().any(|&j| {
-                    let q = pts[j];
-                    q != a && q != b && q != c && cross(a, b, q) * s >= 0.0 && cross(b, c, q) * s >= 0.0 && cross(c, a, q) * s >= 0.0
-                })
-        });
-        match ear {
-            Some(i) => {
-                let (a, b, c) = tri(i);
-                tris.extend([a as u32, b as u32, c as u32]);
-                idx.remove(i);
+impl App {
+    fn go(&mut self, step: usize) {
+        self.step = step.min(STEPS - 1);
+        self.step_at = std::time::Instant::now();
+    }
+
+    /// Seconds since the current step appeared (renders count as settled).
+    fn step_time(&self) -> f32 {
+        if self.render_to.is_some() { 5.0 } else { self.step_at.elapsed().as_secs_f32() }
+    }
+
+    fn installer(&mut self, ui: &mut egui::Ui, full: Rect) {
+        let p = ui.painter().clone();
+        let drag = ui.interact(full, ui.scope_id().with("drag"), Sense::click_and_drag());
+        if drag.drag_started() {
+            ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
+        }
+        let mid = full.left() + full.width() * 0.5;
+        let left = Rect::from_min_max(full.min, pos2(mid, full.bottom()));
+        let right = Rect::from_min_max(pos2(mid, full.top()), full.max);
+
+        // right: the controller, quietly pressing a button now and then
+        p.rect_filled(right, CornerRadius { ne: CARD_R, se: CARD_R, ..Default::default() }, SCENE);
+        let now = if self.render_to.is_some() { 0.3 } else { self.launched.elapsed().as_secs_f32() };
+        let mut demo = demo_status();
+        let presses = [A, 0, RB, 0, Y, 0, UP, 0, B, 0, X, 0];
+        demo.pad = Pad { buttons: presses[(now / 0.8) as usize % presses.len()], ..Pad::default() };
+        demo.pad.lx = 0.7 * (now * 1.2).cos();
+        demo.pad.ly = 0.7 * (now * 1.2).sin();
+        demo.pad.rt = if (now / 0.8) as usize % presses.len() == 9 { 210 } else { 0 };
+        crate::ps5::paint(&p, Rect::from_min_max(right.min + vec2(30.0, 70.0), right.max - vec2(24.0, 70.0)), &demo);
+        // step dots
+        let dots_w = (STEPS as f32 - 1.0) * 12.0 + 18.0;
+        let mut x = right.center().x - dots_w / 2.0;
+        for i in 0..STEPS {
+            let w = if i == self.step { 18.0 } else { 6.0 };
+            let r = Rect::from_min_size(pos2(x, right.bottom() - 28.0), vec2(w, 6.0));
+            p.rect_filled(r, 3.0, Color32::from_white_alpha(if i == self.step { 230 } else { 80 }));
+            x += w + 6.0;
+        }
+        // minimise / close as soft round buttons on the scene
+        for (i, is_close) in [(1.0, false), (0.0, true)] {
+            let c = pos2(right.right() - 31.0 - i * 32.0, right.top() + 31.0);
+            let r = ui.interact(Rect::from_center_size(c, vec2(26.0, 26.0)), ui.scope_id().with(("w", is_close)), Sense::click());
+            p.circle_filled(c, 13.0, Color32::from_white_alpha(if r.hovered() { 50 } else { 20 }));
+            let st = Stroke::new(1.3, Color32::from_white_alpha(if r.hovered() { 255 } else { 190 }));
+            if is_close {
+                p.line_segment([c + vec2(-4.0, -4.0), c + vec2(4.0, 4.0)], st);
+                p.line_segment([c + vec2(-4.0, 4.0), c + vec2(4.0, -4.0)], st);
+            } else {
+                p.line_segment([c + vec2(-4.5, 0.0), c + vec2(4.5, 0.0)], st);
             }
-            // only straight (collinear) points left to drop
-            None => match (0..n).find(|&i| cross(pts[tri(i).0], pts[tri(i).1], pts[tri(i).2]).abs() <= 1e-6) {
-                Some(i) => {
-                    idx.remove(i);
-                }
-                None => break,
-            },
+            if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                ui.ctx().send_viewport_cmd(if is_close { ViewportCommand::Close } else { ViewportCommand::Minimized(true) });
+            }
         }
-    }
-    if idx.len() == 3 {
-        tris.extend(idx.iter().map(|&v| v as u32));
-    }
-    tris
-}
 
-struct Shell {
-    body: Vec<Pt>,
-    body_t: Vec<u32>,
-    plate: Vec<Pt>, // darker centre part (DualSense two-tone), may be empty
-    plate_t: Vec<u32>,
-}
-
-fn ds5_body() -> Vec<Pt> {
-    mirrored(
-        (210.0, 56.0),
-        &[
-            [(190.0, 56.0), (170.0, 56.0), (152.0, 56.0)],
-            [(128.0, 56.0), (116.0, 46.0), (92.0, 46.0)],
-            [(64.0, 46.0), (50.0, 58.0), (44.0, 80.0)],
-            [(34.0, 118.0), (22.0, 170.0), (20.0, 206.0)],
-            [(18.0, 248.0), (40.0, 270.0), (68.0, 270.0)],
-            [(96.0, 270.0), (108.0, 250.0), (118.0, 228.0)],
-            [(132.0, 200.0), (160.0, 196.0), (210.0, 196.0)],
-        ],
-    )
-}
-
-fn shell(skin: Skin) -> &'static Shell {
-    static DS: std::sync::OnceLock<Shell> = std::sync::OnceLock::new();
-    static XB: std::sync::OnceLock<Shell> = std::sync::OnceLock::new();
-    let make = |body: Vec<Pt>, plate: Vec<Pt>| Shell { body_t: triangulate(&body), plate_t: triangulate(&plate), body, plate };
-    match skin {
-        Skin::DualSense => DS.get_or_init(|| {
-            // the black centre: from beside the touchpad down around the sticks to the arch
-            let plate = mirrored(
-                (210.0, 56.0),
-                &[
-                    [(190.0, 56.0), (166.0, 56.0), (148.0, 56.0)],
-                    [(140.0, 120.0), (114.0, 160.0), (118.0, 228.0)],
-                    [(132.0, 200.0), (160.0, 196.0), (210.0, 196.0)],
-                ],
-            );
-            make(ds5_body(), plate)
-        }),
-        Skin::Xbox => XB.get_or_init(|| {
-            let body = mirrored(
-                (210.0, 64.0),
-                &[
-                    [(184.0, 64.0), (164.0, 50.0), (124.0, 48.0)],
-                    [(84.0, 46.0), (58.0, 56.0), (46.0, 82.0)],
-                    [(32.0, 120.0), (16.0, 182.0), (22.0, 222.0)],
-                    [(28.0, 262.0), (64.0, 272.0), (86.0, 254.0)],
-                    [(108.0, 236.0), (128.0, 210.0), (162.0, 206.0)],
-                    [(184.0, 204.0), (196.0, 206.0), (210.0, 206.0)],
-                ],
-            );
-            make(body, vec![])
-        }),
-    }
-}
-
-const WING: Color32 = Color32::from_rgb(36, 36, 40);
-const PLATE: Color32 = Color32::from_rgb(23, 23, 26);
-const WELL: Color32 = Color32::from_rgb(15, 15, 17);
-
-/// Everything a part needs to draw itself.
-struct Pen<'a> {
-    p: &'a Painter,
-    o: Pos2,
-    k: f32,
-    s: &'a Status,
-    acc: Color32,
-    ink: Color32,
-    line: Color32,
-    st: Stroke,
-    hot: Stroke,
-    live: bool,
-}
-
-impl Pen<'_> {
-    fn at(&self, x: f32, y: f32) -> Pos2 {
-        self.o + vec2(x, y) * self.k
-    }
-    fn on(&self, bit: u16) -> bool {
-        self.s.pad.buttons & bit != 0
-    }
-    fn pick(&self, on: bool) -> (Color32, Stroke) {
-        if on { (self.acc, self.hot) } else { (WELL, self.st) }
-    }
-    fn font(&self, size: f32) -> FontId {
-        FontId::proportional(size * self.k)
-    }
-    fn fill(&self, pts: &[Pt], tris: &[u32], color: Color32) {
-        if pts.is_empty() {
-            return;
+        // left: the paper, with a torn edge over the scene
+        p.rect_filled(left, CornerRadius { nw: CARD_R, sw: CARD_R, ..Default::default() }, PAPER);
+        let jag = |i: u32| {
+            let h = i.wrapping_mul(2_654_435_761).rotate_left(13).wrapping_mul(40_503);
+            3.0 + (h % 1000) as f32 / 1000.0 * 9.0
+        };
+        let step = 5.0;
+        let n = (full.height() / step) as u32 + 1;
+        for i in 0..n {
+            let (y0, y1) = (full.top() + i as f32 * step, (full.top() + (i + 1) as f32 * step).min(full.bottom()));
+            let pts = vec![pos2(mid - 1.0, y0), pos2(mid + jag(i), y0), pos2(mid + jag(i + 1), y1), pos2(mid - 1.0, y1)];
+            p.add(Shape::convex_polygon(pts, PAPER, Stroke::NONE));
         }
-        let mut m = egui::Mesh::default();
-        for &(x, y) in pts {
-            m.colored_vertex(self.at(x, y), color);
-        }
-        m.indices = tris.to_vec();
-        self.p.add(Shape::mesh(m));
-    }
-    fn trace(&self, pts: &[Pt], stroke: Stroke) {
-        if !pts.is_empty() {
-            self.p.add(Shape::closed_line(pts.iter().map(|&(x, y)| self.at(x, y)).collect(), stroke));
-        }
-    }
-    /// Convex shape relative to a centre, filled when pressed.
-    fn key(&self, c: Pt, pts: &[Pt], on: bool) {
-        let (fill, stroke) = self.pick(on);
-        self.p.add(Shape::convex_polygon(pts.iter().map(|&(x, y)| self.at(c.0 + x, c.1 + y)).collect(), fill, stroke));
-    }
-    fn trigger(&self, x0: f32, y0: f32, w: f32, v: u8, name: &str) {
-        let t = Rect::from_min_max(self.at(x0, y0), self.at(x0 + w, y0 + 30.0));
-        let cr = CornerRadius { nw: (14.0 * self.k) as u8, ne: (14.0 * self.k) as u8, sw: (3.0 * self.k) as u8, se: (3.0 * self.k) as u8 };
-        self.p.rect_filled(t, cr, WELL);
-        if v > 0 {
-            let h = t.height() * v as f32 / 255.0;
-            self.p.rect_filled(Rect::from_min_max(pos2(t.left(), t.bottom() - h), t.max), if h > 14.0 * self.k { cr } else { CornerRadius::ZERO }, self.acc);
-        }
-        self.p.rect_stroke(t, cr, if v > 0 { self.hot } else { self.st }, StrokeKind::Inside);
-        self.p.text(t.center(), Align2::CENTER_CENTER, name, self.font(9.0), if v > 150 { self.ink } else { MUTED });
-    }
-    fn bumper(&self, x0: f32, y0: f32, w: f32, bit: u16, name: &str) {
-        let b = Rect::from_min_max(self.at(x0, y0), self.at(x0 + w, y0 + 9.0));
-        let (fill, stroke) = self.pick(self.on(bit));
-        self.p.rect_filled(b, 4.5 * self.k, fill);
-        self.p.rect_stroke(b, 4.5 * self.k, stroke, StrokeKind::Inside);
-        self.p.text(b.center(), Align2::CENTER_CENTER, name, self.font(7.0), if self.on(bit) { self.ink } else { MUTED });
-    }
-    fn round(&self, c: Pt, r: f32, on: bool) {
-        let (fill, stroke) = self.pick(on);
-        self.p.circle_filled(self.at(c.0, c.1), r * self.k, fill);
-        self.p.circle_stroke(self.at(c.0, c.1), r * self.k, stroke);
-    }
-    /// Well, cap that follows the stick, a line from the centre while it is pushed.
-    fn stick(&self, c: Pt, x: f32, y: f32, bit: u16) {
-        let k = self.k;
-        let cc = self.at(c.0, c.1);
-        self.p.circle_filled(cc, 23.0 * k, WELL);
-        self.p.circle_stroke(cc, 23.0 * k, self.st);
-        let d = cc + vec2(x, -y) * 9.0 * k;
-        let moved = x != 0.0 || y != 0.0;
-        let pressed = self.on(bit);
-        self.p.circle_filled(d, 15.0 * k, if pressed { self.acc } else { WING });
-        self.p.circle_stroke(d, 15.0 * k, if moved || pressed { self.hot } else { self.st });
-        self.p.circle_stroke(d, 9.5 * k, Stroke::new(self.st.width * 0.8, if pressed { self.ink.gamma_multiply(0.5) } else { self.line.gamma_multiply(0.5) }));
-        if moved {
-            self.p.line_segment([cc, d], Stroke::new(1.4 * k, self.acc));
-            self.p.circle_filled(cc, 2.0 * k, self.acc);
-        }
-    }
-    fn symbol_stroke(&self, pressed: bool) -> Stroke {
-        Stroke::new((1.0 * self.k).max(0.9), if pressed { self.ink } else { TEXT.gamma_multiply(if self.live { 0.7 } else { 0.4 }) })
-    }
-}
 
-/// The live controller, fitted into `area`.
-fn controller(p: &Painter, area: Rect, s: &Status, skin: Skin) {
-    let k = (area.width() / 420.0).min(area.height() / 280.0);
-    let live = s.controller != 0;
-    let acc = accent();
-    let line = TEXT.gamma_multiply(if live { 0.42 } else { 0.25 });
-    let sw = k.max(1.0);
-    let pen = Pen {
-        p,
-        o: area.center() - vec2(210.0, 140.0) * k,
-        k,
-        s,
-        acc,
-        ink: on_accent(acc),
-        line,
-        st: Stroke::new(sw, line),
-        hot: Stroke::new(sw, acc),
-        live,
-    };
-    match skin {
-        Skin::DualSense => dualsense(&pen),
-        Skin::Xbox => xbox(&pen),
-    }
-}
-
-fn dualsense(pen: &Pen) {
-    let (s, k) = (pen.s, pen.k);
-    pen.trigger(70.0, 0.0, 56.0, s.pad.lt, "L2");
-    pen.trigger(294.0, 0.0, 56.0, s.pad.rt, "R2");
-    pen.bumper(62.0, 32.0, 72.0, LB, "L1");
-    pen.bumper(286.0, 32.0, 72.0, RB, "R1");
-
-    let sh = shell(Skin::DualSense);
-    pen.fill(&sh.body, &sh.body_t, WING);
-    pen.fill(&sh.plate, &sh.plate_t, PLATE);
-    pen.trace(&sh.plate, Stroke::new(pen.st.width, pen.line.gamma_multiply(0.55)));
-    pen.trace(&sh.body, pen.st);
-
-    // touchpad: flat top, bottom edge curving down in the middle
-    let mut pad = vec![(152.0, 60.0), (268.0, 60.0), (268.0, 106.0)];
-    cubic(&mut pad, (268.0, 106.0), (250.0, 122.0), (226.0, 124.0), (210.0, 124.0));
-    cubic(&mut pad, (210.0, 124.0), (194.0, 124.0), (170.0, 122.0), (152.0, 106.0));
-    pen.p.add(Shape::convex_polygon(pad.iter().map(|&(x, y)| pen.at(x, y)).collect(), WELL, pen.st));
-    // light bars beside the touchpad
-    if pen.live {
-        for (a, b) in [((146.0, 66.0), (143.0, 108.0)), ((274.0, 66.0), (277.0, 108.0))] {
-            pen.p.line_segment([pen.at(a.0, a.1), pen.at(b.0, b.1)], Stroke::new(2.0 * k, pen.acc.gamma_multiply(0.75)));
+        // content slides in from the right on every step
+        let k = smooth(self.step_time() / 0.4);
+        let shift = 16.0 * (1.0 - k);
+        let area = Rect::from_min_max(left.min + vec2(46.0 + shift, 40.0), left.max - vec2(46.0 - shift, 30.0));
+        let top = Rect::from_min_max(area.min, pos2(area.right(), area.bottom() - 122.0));
+        let bottom = Rect::from_min_max(pos2(area.left(), area.bottom() - 112.0), area.max);
+        let mut c = ui.new_child(egui::UiBuilder::new().max_rect(top));
+        c.set_opacity(k);
+        {
+            let v = c.visuals_mut();
+            v.override_text_color = Some(PAPER_INK);
+            v.widgets.inactive.weak_bg_fill = PAPER_FIELD;
+            v.widgets.inactive.bg_fill = PAPER_FIELD;
+            v.widgets.hovered.weak_bg_fill = Color32::from_rgb(228, 225, 220);
+            v.widgets.hovered.bg_fill = Color32::from_rgb(228, 225, 220);
+            v.widgets.inactive.fg_stroke = Stroke::new(1.0, PAPER_INK);
+            v.widgets.hovered.fg_stroke = Stroke::new(1.0, PAPER_INK);
         }
-    }
-    // create / options
-    for (x, bit) in [(134.0, BACK), (286.0, START)] {
-        let (fill, stroke) = pen.pick(pen.on(bit));
-        let r = Rect::from_center_size(pen.at(x, 70.0), vec2(5.0, 13.0) * k);
-        pen.p.rect_filled(r, 2.5 * k, fill);
-        pen.p.rect_stroke(r, 2.5 * k, stroke, StrokeKind::Inside);
-    }
-    // d-pad: four arrow keys pointing at the centre
-    let arrow = [(-6.5, -21.0), (6.5, -21.0), (6.5, -9.0), (0.0, -3.5), (-6.5, -9.0)];
-    for (rot, bit) in [(0, UP), (1, RIGHT), (2, DOWN), (3, LEFT)] {
-        let pts: Vec<Pt> = arrow.iter().map(|&(x, y)| match rot { 0 => (x, y), 1 => (-y, x), 2 => (-x, -y), _ => (y, -x) }).collect();
-        pen.key((96.0, 112.0), &pts, pen.on(bit));
-    }
-    // face buttons with thin symbols
-    let fc = (324.0, 112.0);
-    for (i, (dx, dy, bit)) in [(0.0, -1.0, Y), (1.0, 0.0, B), (0.0, 1.0, A), (-1.0, 0.0, X)].into_iter().enumerate() {
-        let c = (fc.0 + dx * 21.0, fc.1 + dy * 21.0);
-        let pressed = pen.on(bit);
-        pen.round(c, 10.0, pressed);
-        let (cc, m, st) = (pen.at(c.0, c.1), 4.4 * k, pen.symbol_stroke(pressed));
-        match i {
+        c.spacing_mut().item_spacing = vec2(8.0, 6.0);
+        c.label(RichText::new(trf("Step {} of {}", &[&(self.step + 1), &STEPS])).size(12.0).color(PAPER_MUTED));
+        c.add_space(4.0);
+        let title = match self.step {
+            0 => tr("Your DualSense, at home on Windows"),
+            1 => tr("Make it yours"),
+            2 => tr("One small driver"),
+            3 => tr("Setting things up"),
+            _ => tr("Ready to play"),
+        };
+        c.label(RichText::new(title).font(serif(38.0)).color(PAPER_INK));
+        c.add_space(18.0);
+
+        let (mut action, mut note, mut back, mut progress) = (None, String::new(), false, 1.0);
+        match self.step {
             0 => {
-                pen.p.add(Shape::closed_line(vec![cc + vec2(0.0, -m), cc + vec2(m * 0.95, m * 0.7), cc + vec2(-m * 0.95, m * 0.7)], st));
+                for line in [tr("USB and Bluetooth"), tr("Works in every game that supports Xbox controllers"), tr("Offline. No account. No telemetry.")] {
+                    c.horizontal(|ui| {
+                        let (r, _) = ui.allocate_exact_size(vec2(10.0, 20.0), Sense::hover());
+                        ui.painter().circle_filled(r.center(), 2.5, PAPER_MUTED);
+                        ui.label(RichText::new(line).size(14.0));
+                    });
+                }
+                action = Some(tr("Get started"));
+                note = tr("Free and open source. Nothing leaves your PC.").to_string();
             }
             1 => {
-                pen.p.circle_stroke(cc, m, st);
+                let labels = [tr("Start menu shortcut"), tr("Desktop shortcut"), tr("Start with Windows"), tr("Check for updates")];
+                for (i, t) in labels.into_iter().enumerate() {
+                    paper_check(&mut c, &mut self.opt[i], t);
+                }
+                c.add_space(6.0);
+                c.horizontal(|ui| {
+                    ui.label(RichText::new(tr("Language")).size(14.0).color(PAPER_MUTED));
+                    ui.add_space(8.0);
+                    self.language_picker(ui);
+                });
+                action = Some(tr("Continue"));
+                // shown as %LOCALAPPDATA% so screenshots never contain a user name
+                note = trf("Installs to {}", &[&r"%LOCALAPPDATA%\Programs\DS5 Bridge"]);
+                back = true;
             }
             2 => {
-                pen.p.line_segment([cc + vec2(-m, -m) * 0.8, cc + vec2(m, m) * 0.8], st);
-                pen.p.line_segment([cc + vec2(-m, m) * 0.8, cc + vec2(m, -m) * 0.8], st);
+                c.horizontal(|ui| {
+                    if self.vigem {
+                        dot(ui, Color32::from_rgb(70, 150, 90));
+                        ui.label(RichText::new(tr("ViGEmBus driver found")).size(14.5));
+                    } else {
+                        dot(ui, Color32::from_rgb(200, 110, 70));
+                        ui.label(RichText::new(tr("ViGEmBus driver missing: needed for the virtual controller")).size(14.5));
+                    }
+                });
+                c.label(RichText::new(tr("ViGEmBus creates the virtual Xbox controller that games see. Open source, by Nefarius.")).size(13.0).color(PAPER_MUTED));
+                if !self.vigem {
+                    c.add_space(4.0);
+                    c.horizontal(|ui| {
+                        if ui.add(egui::Label::new(RichText::new(tr("Get ViGEmBus (open source)")).size(13.5).underline()).sense(Sense::click())).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                            open_url("https://github.com/nefarius/ViGEmBus/releases");
+                        }
+                        ui.add_space(10.0);
+                        if ui.add(egui::Label::new(RichText::new(tr("Check again")).size(13.5).color(PAPER_MUTED).underline()).sense(Sense::click())).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                            self.vigem = crate::win::vigem_present();
+                        }
+                    });
+                }
+                action = Some(tr("Install"));
+                note = if self.vigem { tr("No admin rights needed.") } else { tr("You can also install it later. DS5 Bridge will remind you.") }.to_string();
+                back = true;
+            }
+            3 => {
+                let t = self.step_time();
+                progress = smooth(t / 1.1);
+                let failed = if let Inst::Failed(e) = &self.inst { Some(e.clone()) } else { None };
+                match failed {
+                    Some(e) => {
+                        c.label(RichText::new(trf("Installation failed: {}", &[&e])).size(13.5).color(Color32::from_rgb(190, 80, 60)));
+                        action = Some(tr("Try again"));
+                        progress = 0.0;
+                    }
+                    None => {
+                        let msg = if t < 0.4 { tr("Copying DS5 Bridge…") } else if t < 0.8 { tr("Creating shortcuts…") } else { tr("Almost done…") };
+                        c.label(RichText::new(msg).size(13.5).color(PAPER_MUTED));
+                        if t > 1.25 && self.render_to.is_none() {
+                            self.go(4);
+                        }
+                        ui.ctx().request_repaint();
+                    }
+                }
             }
             _ => {
-                pen.p.rect_stroke(Rect::from_center_size(cc, vec2(m, m) * 1.6), 1.0, st, StrokeKind::Middle);
+                c.label(RichText::new(tr("Plug in your DualSense or pair it over Bluetooth. DS5 Bridge waits in the tray, bottom right.")).size(14.0));
+                action = Some(tr("Open DS5 Bridge"));
+                note = tr("No account, no telemetry. Your data stays on this PC.").to_string();
             }
         }
-    }
-    // speaker grille, PS button, mute button
-    for row in 0..3 {
-        for col in 0..(7 - row % 2) {
-            let x = 210.0 - (6 - row % 2) as f32 * 3.0 + col as f32 * 6.0;
-            pen.p.circle_filled(pen.at(x, 134.0 + row as f32 * 5.0), 1.0 * k, pen.line);
+
+        // bottom: one action, a hand-drawn line (it draws itself as progress), a small note
+        let mut b = ui.new_child(egui::UiBuilder::new().max_rect(bottom));
+        b.set_opacity(k);
+        let cx = bottom.center().x;
+        let bp = b.painter().clone();
+        if let Some(label) = action {
+            let g = bp.layout_no_wrap(label.to_string(), serif(20.0), PAPER_INK);
+            let w = g.size().x + 30.0;
+            let r = Rect::from_center_size(pos2(cx, bottom.top() + 16.0), vec2(w, 32.0));
+            let resp = b.interact(r, b.scope_id().with("go"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+            let nudge = b.ctx().animate_bool(resp.id, resp.hovered()) * 3.0;
+            bp.galley(pos2(r.left(), r.center().y - g.size().y / 2.0), g, PAPER_INK);
+            let a = pos2(r.right() - 12.0 + nudge, r.center().y);
+            let st = Stroke::new(1.6, PAPER_INK);
+            bp.line_segment([a - vec2(9.0, 0.0), a + vec2(3.0, 0.0)], st);
+            bp.line_segment([a + vec2(3.0, 0.0), a + vec2(-2.0, -5.0)], st);
+            bp.line_segment([a + vec2(3.0, 0.0), a + vec2(-2.0, 5.0)], st);
+            if resp.clicked() {
+                sound::click();
+                match self.step {
+                    0 | 1 => self.go(self.step + 1),
+                    2 => {
+                        let o = installer::Options { start_menu: self.opt[0], desktop: self.opt[1], autostart: self.opt[2] };
+                        self.settings.check_updates = self.opt[3];
+                        self.save();
+                        self.inst = match installer::install(&o) {
+                            Ok(()) => Inst::Done,
+                            Err(e) => Inst::Failed(e),
+                        };
+                        self.go(3);
+                    }
+                    3 => {
+                        self.inst = Inst::Ready;
+                        self.go(2);
+                    }
+                    _ => {
+                        let _ = std::process::Command::new(installer::installed_exe()).spawn();
+                        b.ctx().send_viewport_cmd(ViewportCommand::Close);
+                    }
+                }
+            }
         }
-    }
-    pen.round((210.0, 162.0), 8.0, pen.on(GUIDE));
-    let mic = Rect::from_center_size(pen.at(210.0, 180.0), vec2(12.0, 4.0) * k);
-    pen.p.rect_stroke(mic, 2.0 * k, pen.st, StrokeKind::Inside);
-
-    pen.stick((156.0, 164.0), s.pad.lx, s.pad.ly, LS);
-    pen.stick((264.0, 164.0), s.pad.rx, s.pad.ry, RS);
-}
-
-fn xbox(pen: &Pen) {
-    let (s, k) = (pen.s, pen.k);
-    pen.trigger(78.0, 2.0, 54.0, s.pad.lt, "LT");
-    pen.trigger(288.0, 2.0, 54.0, s.pad.rt, "RT");
-    pen.bumper(66.0, 34.0, 76.0, LB, "LB");
-    pen.bumper(278.0, 34.0, 76.0, RB, "RB");
-
-    let sh = shell(Skin::Xbox);
-    pen.fill(&sh.body, &sh.body_t, WING);
-    pen.trace(&sh.body, pen.st);
-
-    // guide, view, menu
-    pen.round((210.0, 84.0), 12.0, pen.on(GUIDE));
-    let x = pen.at(210.0, 84.0);
-    let st = pen.symbol_stroke(pen.on(GUIDE));
-    pen.p.line_segment([x + vec2(-4.5, -4.5) * k, x + vec2(4.5, 4.5) * k], st);
-    pen.p.line_segment([x + vec2(-4.5, 4.5) * k, x + vec2(4.5, -4.5) * k], st);
-    for (cx, bit) in [(180.0, BACK), (240.0, START)] {
-        pen.round((cx, 112.0), 6.5, pen.on(bit));
-    }
-    // left stick high, d-pad low, right stick low, buttons high
-    pen.stick((110.0, 110.0), s.pad.lx, s.pad.ly, LS);
-    let arm = [(-6.0, -20.0), (6.0, -20.0), (6.0, -6.0), (-6.0, -6.0)];
-    for (rot, bit) in [(0, UP), (1, RIGHT), (2, DOWN), (3, LEFT)] {
-        let pts: Vec<Pt> = arm.iter().map(|&(x, y)| match rot { 0 => (x, y), 1 => (-y, x), 2 => (-x, -y), _ => (y, -x) }).collect();
-        pen.key((164.0, 164.0), &pts, pen.on(bit));
-    }
-    pen.stick((258.0, 164.0), s.pad.rx, s.pad.ry, RS);
-    let fc = (314.0, 110.0);
-    for (dx, dy, bit, name) in [(0.0, -1.0, Y, "Y"), (1.0, 0.0, B, "B"), (0.0, 1.0, A, "A"), (-1.0, 0.0, X, "X")] {
-        let c = (fc.0 + dx * 21.0, fc.1 + dy * 21.0);
-        let pressed = pen.on(bit);
-        pen.round(c, 10.0, pressed);
-        pen.p.text(pen.at(c.0, c.1), Align2::CENTER_CENTER, name, pen.font(10.0), pen.symbol_stroke(pressed).color);
+        let line: Vec<Pos2> = (0..=48)
+            .map(|i| {
+                let x = -110.0 + i as f32 * 220.0 / 48.0;
+                pos2(cx + x, bottom.top() + 44.0 + (x * 0.09).sin() * 1.1 + (x * 0.031 + 1.0).sin() * 0.9)
+            })
+            .collect();
+        trace(&bp, line, Stroke::new(3.0, PAPER_INK), progress);
+        if !note.is_empty() {
+            let g = bp.layout(note, FontId::proportional(12.5), PAPER_MUTED, 300.0);
+            bp.galley(pos2(cx - g.size().x / 2.0, bottom.top() + 60.0), g, PAPER_MUTED);
+        }
+        if back {
+            let r = Rect::from_min_size(pos2(area.left(), bottom.top() + 6.0), vec2(60.0, 20.0));
+            let resp = b.interact(r, b.scope_id().with("back"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+            bp.text(r.left_center(), Align2::LEFT_CENTER, format!("← {}", tr("Back")), FontId::proportional(12.5), if resp.hovered() { PAPER_INK } else { PAPER_MUTED });
+            if resp.clicked() {
+                sound::click();
+                self.go(self.step - 1);
+            }
+        }
+        if self.render_to.is_none() {
+            // keep the controller and the slide alive while the installer is open
+            ui.ctx().request_repaint_after(Duration::from_millis(33));
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    /// The outlines must triangulate completely, or the controller would have holes.
-    #[test]
-    fn outlines_fill_completely() {
-        use super::*;
-        let area = |pts: &[Pt]| (0..pts.len()).map(|i| { let (a, b) = (pts[i], pts[(i + 1) % pts.len()]); a.0 * b.1 - b.0 * a.1 }).sum::<f32>().abs() / 2.0;
-        let tri_area = |pts: &[Pt], t: &[u32]| t.chunks(3).map(|c| area(&[pts[c[0] as usize], pts[c[1] as usize], pts[c[2] as usize]])).sum::<f32>();
-        for skin in [Skin::DualSense, Skin::Xbox] {
-            let sh = shell(skin);
-            assert!((area(&sh.body) - tri_area(&sh.body, &sh.body_t)).abs() < 1.0, "body");
-            assert!((area(&sh.plate) - tri_area(&sh.plate, &sh.plate_t)).abs() < 1.0, "plate");
-        }
-        // an L shape, the simplest non-convex case
-        let l = [(0.0, 0.0), (2.0, 0.0), (2.0, 1.0), (1.0, 1.0), (1.0, 2.0), (0.0, 2.0)];
-        assert_eq!(triangulate(&l).len(), 12);
-    }
-
     #[test]
     fn click_wav_is_valid() {
         let w = super::sound::wav(2000.0, 10.0, 0.1);
