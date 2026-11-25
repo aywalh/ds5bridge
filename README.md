@@ -70,7 +70,7 @@ You can check the download against `DS5Bridge.exe.sha256` from the same release.
 **Remove:** *Settings → Apps → Installed apps → DS5 Bridge → Uninstall*. That removes the app,
 its shortcuts, the autostart entry and its settings.
 
-**Portable:** run `DS5Bridge.exe --portable` to use it without installing.
+**Portable:** download **`DS5Bridge-portable.exe`** instead and just run it. Nothing is installed (or run `DS5Bridge.exe --portable`).
 
 ## Privacy
 

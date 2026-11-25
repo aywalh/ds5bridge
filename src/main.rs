@@ -55,9 +55,14 @@ fn main() {
         installer::uninstall();
     } else if has("--uninstall") {
         gui::run(gui::Mode::Uninstall);
-    } else if installer::running_installed() || has("--portable") {
+    } else if installer::running_installed() || has("--portable") || portable_name() {
         tray::start_and_show();
     } else {
         gui::run(gui::Mode::Install);
     }
+}
+
+/// `DS5Bridge-portable.exe` (the portable download) runs without installing, like `--portable`.
+fn portable_name() -> bool {
+    std::env::current_exe().ok().and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_lowercase().contains("portable"))).unwrap_or(false)
 }
