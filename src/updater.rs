@@ -9,8 +9,17 @@ use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
-pub const REPO: &str = "aywalh/ds5bridge";
-pub const REPO_URL: &str = "https://github.com/aywalh/ds5bridge";
+pub fn repository() -> Option<&'static str> {
+    let repo = option_env!("DS5BRIDGE_UPDATE_REPOSITORY")?;
+    let (owner, name) = repo.split_once('/')?;
+    let valid = |part: &str| !part.is_empty() && part.bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'));
+    (valid(owner) && valid(name)).then_some(repo)
+}
+
+pub fn repository_url() -> Option<String> {
+    repository().map(|repo| format!("https://github.com/{repo}"))
+}
 const ASSET: &str = "DS5Bridge.exe";
 
 #[derive(Clone, Debug, PartialEq)]
@@ -26,13 +35,13 @@ pub struct Release {
 fn curl() -> std::process::Command {
     let sys = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
     let mut c = std::process::Command::new(Path::new(&sys).join("System32").join("curl.exe"));
-    c.args(["-sSfL", "--proto", "=https", "--max-time", "120", "-A", concat!("DS5Bridge/", env!("CARGO_PKG_VERSION"))]);
+    c.args(["--disable", "-sSfL", "--proto", "=https", "--max-time", "120", "-A", concat!("DS5Bridge/", env!("CARGO_PKG_VERSION"))]);
     c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     c
 }
 
 fn get(url: &str) -> Result<String, String> {
-    let out = curl().args(["-H", "Accept: application/vnd.github+json", url]).output().map_err(|e| e.to_string())?;
+    let out = curl().args(["--max-filesize", "2097152", "-H", "Accept: application/vnd.github+json", url]).output().map_err(|e| e.to_string())?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
     }
@@ -64,7 +73,8 @@ pub fn newer(remote: &str, local: &str) -> bool {
 
 /// Newest release if it is newer than this build.
 pub fn check() -> Result<Option<Release>, String> {
-    let body = get(&format!("https://api.github.com/repos/{REPO}/releases/latest"))?;
+    let Some(repo) = repository() else { return Ok(None) };
+    let body = get(&format!("https://api.github.com/repos/{repo}/releases/latest"))?;
     let r = parse_release(&body).ok_or("unexpected answer from GitHub")?;
     Ok(newer(&r.version, env!("CARGO_PKG_VERSION")).then_some(r))
 }
@@ -90,19 +100,48 @@ pub enum UpdateError {
     Install(String),
 }
 
+pub struct VerifiedDownload {
+    path: PathBuf,
+    checksum: String,
+}
+
+impl Drop for VerifiedDownload {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+        if let Some(parent) = self.path.parent() { let _ = std::fs::remove_dir(parent); }
+    }
+}
+
+fn is_release_asset(repo_url: &str, url: &str, name: &str) -> bool {
+    let prefix = format!("{repo_url}/releases/download/");
+    let Some((tag, asset)) = url.strip_prefix(&prefix).and_then(|tail| tail.split_once('/')) else { return false };
+    !tag.is_empty() && tag.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_')) && asset == name
+}
+
 /// Download and verify. `progress` receives the bytes written so far.
-pub fn download(r: &Release, progress: &AtomicU64) -> Result<PathBuf, UpdateError> {
+pub fn download(r: &Release, progress: &AtomicU64) -> Result<VerifiedDownload, UpdateError> {
+    let repo = repository_url().ok_or_else(|| UpdateError::Download("Update repository is not configured".into()))?;
+    if !is_release_asset(&repo, &r.url, ASSET) {
+        return Err(UpdateError::Download("Unexpected GitHub asset URL".into()));
+    }
     let expected = match (&r.sha256, &r.sha256_url) {
         (Some(h), _) => h.clone(),
-        (None, Some(u)) => get(u).map_err(UpdateError::Download)?.split_whitespace().next().unwrap_or("").to_lowercase(),
+        (None, Some(u)) if is_release_asset(&repo, u, &format!("{ASSET}.sha256")) => {
+            get(u).map_err(UpdateError::Download)?.split_whitespace().next().unwrap_or("").to_lowercase()
+        }
         _ => return Err(UpdateError::NoChecksum),
     };
-    if expected.len() != 64 {
+    if expected.len() != 64 || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(UpdateError::NoChecksum);
     }
-    let path = std::env::temp_dir().join(format!("DS5Bridge-{}.exe", r.version));
-    let _ = std::fs::remove_file(&path);
-    let mut child = curl().arg("-o").arg(&path).arg(&r.url).spawn().map_err(|e| UpdateError::Download(e.to_string()))?;
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let sequence = SEQUENCE.fetch_add(1, Relaxed);
+    let dir = std::env::temp_dir().join(format!("DS5Bridge-update-{}-{sequence}", std::process::id()));
+    std::fs::create_dir(&dir).map_err(|e| UpdateError::Download(e.to_string()))?;
+    let verified = VerifiedDownload { path: dir.join(ASSET), checksum: expected };
+    let path = &verified.path;
+    let mut child = curl().args(["--max-filesize", "67108864"]).arg("-o").arg(path).arg(&r.url)
+        .spawn().map_err(|e| UpdateError::Download(e.to_string()))?;
     loop {
         if let Some(status) = child.try_wait().map_err(|e| UpdateError::Download(e.to_string()))? {
             if !status.success() {
@@ -115,27 +154,22 @@ pub fn download(r: &Release, progress: &AtomicU64) -> Result<PathBuf, UpdateErro
     }
     let data = std::fs::read(&path).map_err(|e| UpdateError::Download(e.to_string()))?;
     progress.store(data.len() as u64, Relaxed);
-    if sha256(&data).as_deref() != Some(expected.as_str()) {
-        let _ = std::fs::remove_file(&path);
+    if (r.size != 0 && r.size != data.len() as u64) || sha256(&data).as_deref() != Some(verified.checksum.as_str()) {
         return Err(UpdateError::BadChecksum);
     }
-    Ok(path)
+    Ok(verified)
 }
 
 /// Swap the verified exe in; the caller starts it. A running exe can be renamed but not overwritten, so:
 /// stop the background process, rename the old exe aside, move the new one in, start it.
-pub fn install(new_exe: &Path, version: &str) -> Result<PathBuf, UpdateError> {
-    let target = if crate::installer::is_installed() { crate::installer::installed_exe() } else { std::env::current_exe().map_err(|e| UpdateError::Install(e.to_string()))? };
-    let old = target.with_extension("old.exe");
+pub fn install(new_exe: &VerifiedDownload, version: &str) -> Result<PathBuf, UpdateError> {
+    let installed = crate::installer::running_installed();
+    let target = std::env::current_exe().map_err(|e| UpdateError::Install(e.to_string()))?;
     crate::installer::stop_background();
-    let _ = std::fs::remove_file(&old);
-    std::fs::rename(&target, &old).map_err(|e| UpdateError::Install(e.to_string()))?;
-    if let Err(e) = std::fs::copy(new_exe, &target) {
-        let _ = std::fs::rename(&old, &target); // put the working version back
-        return Err(UpdateError::Install(e.to_string()));
+    crate::installer::replace_executable(&new_exe.path, &target, Some(&new_exe.checksum)).map_err(UpdateError::Install)?;
+    if installed {
+        crate::installer::set_registered_version(version);
     }
-    let _ = std::fs::remove_file(new_exe);
-    crate::installer::set_registered_version(version);
     Ok(target)
 }
 
@@ -149,6 +183,14 @@ pub fn cleanup() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_exact_release_assets_from_this_repository_are_accepted() {
+        let repo = "https://github.com/example/bridge";
+        assert!(is_release_asset(repo, &format!("{repo}/releases/download/v1.0.1/{ASSET}"), ASSET));
+        assert!(!is_release_asset(repo, &format!("{repo}/releases/download/v1.0.1/{ASSET}?copy=1"), ASSET));
+        assert!(!is_release_asset(repo, "https://github.com/example/other/releases/download/v1.0.1/DS5Bridge.exe", ASSET));
+    }
 
     #[test]
     fn versions_and_release_parsing() {

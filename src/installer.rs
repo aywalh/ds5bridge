@@ -170,6 +170,51 @@ pub fn stop_background() {
     }
 }
 
+/// Stage the complete executable alongside its destination before touching the old copy.
+pub(crate) fn replace_executable(source: &Path, target: &Path, checksum: Option<&str>) -> Result<(), String> {
+    use std::io::Write;
+
+    let bytes = std::fs::read(source).map_err(|e| e.to_string())?;
+    if !bytes.starts_with(b"MZ") {
+        return Err("The file is not a Windows executable".into());
+    }
+    if let Some(expected) = checksum {
+        if crate::updater::sha256(&bytes).as_deref() != Some(expected) {
+            return Err("The verified update changed before installation".into());
+        }
+    }
+
+    let staged = target.with_extension(format!("{}.staged", std::process::id()));
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&staged)
+        .map_err(|e| e.to_string())?;
+    let prepared = file.write_all(&bytes).and_then(|_| file.sync_all());
+    drop(file);
+    if let Err(error) = prepared {
+        let _ = std::fs::remove_file(&staged);
+        return Err(error.to_string());
+    }
+
+    let backup = target.with_extension("old.exe");
+    let had_target = target.exists();
+    let result = (|| {
+        if had_target {
+            if backup.exists() { std::fs::remove_file(&backup).map_err(|e| e.to_string())?; }
+            std::fs::rename(target, &backup).map_err(|e| e.to_string())?;
+        }
+        if let Err(error) = std::fs::rename(&staged, target) {
+            if had_target {
+                if let Err(rollback) = std::fs::rename(&backup, target) {
+                    return Err(format!("{error}. Restore DS5Bridge.old.exe manually ({rollback})."));
+                }
+            }
+            return Err(error.to_string());
+        }
+        Ok(())
+    })();
+    if result.is_err() { let _ = std::fs::remove_file(&staged); }
+    result
+}
+
 pub fn install(o: &Options) -> Result<(), String> {
     let dir = install_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -177,7 +222,7 @@ pub fn install(o: &Options) -> Result<(), String> {
     let me = std::env::current_exe().map_err(|e| e.to_string())?;
     if !same_file(&me, &exe) {
         stop_background(); // reinstall over a running copy
-        std::fs::copy(&me, &exe).map_err(|e| e.to_string())?;
+        replace_executable(&me, &exe, None)?;
     }
     let icon = dir.join("ds5bridge.ico");
     std::fs::write(&icon, crate::icon::ico_file()).map_err(|e| e.to_string())?;
@@ -194,8 +239,8 @@ pub fn install(o: &Options) -> Result<(), String> {
     let k = UNINSTALL_KEY;
     reg_set(k, "DisplayName", APP);
     reg_set(k, "DisplayVersion", env!("CARGO_PKG_VERSION"));
-    reg_set(k, "Publisher", "aywalh");
-    reg_set(k, "URLInfoAbout", crate::updater::REPO_URL);
+    reg_set(k, "Publisher", APP);
+    reg_set(k, "URLInfoAbout", &crate::updater::repository_url().unwrap_or_default());
     reg_set(k, "DisplayIcon", &icon.to_string_lossy());
     reg_set(k, "InstallLocation", &dir.to_string_lossy());
     reg_set(k, "UninstallString", &format!("\"{}\" --uninstall", exe.display()));
@@ -220,5 +265,28 @@ pub fn uninstall() {
         use std::os::windows::process::CommandExt;
         let cmd = format!("ping 127.0.0.1 -n 3 > nul & rmdir /s /q \"{}\"", dir.display());
         let _ = std::process::Command::new("cmd").args(["/C", &cmd]).creation_flags(0x0800_0000).spawn(); // CREATE_NO_WINDOW
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn executable_replacement_keeps_the_old_copy_and_rejects_unverified_input() {
+        let dir = std::env::temp_dir().join(format!("ds5bridge-replace-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir(&dir).unwrap();
+        let target = dir.join("DS5Bridge.exe");
+        let source = dir.join("input.exe");
+        std::fs::write(&target, b"MZold").unwrap();
+        std::fs::write(&source, b"MZnew").unwrap();
+        assert!(replace_executable(&source, &target, Some("incorrect")).is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), b"MZold");
+        let checksum = crate::updater::sha256(b"MZnew").unwrap();
+        replace_executable(&source, &target, Some(&checksum)).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"MZnew");
+        assert_eq!(std::fs::read(target.with_extension("old.exe")).unwrap(), b"MZold");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

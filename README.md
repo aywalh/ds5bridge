@@ -48,7 +48,7 @@ Change the accent colour, language and sounds in **Settings**.
 
 ## Updates and privacy
 
-Controller input and settings stay on your PC. The bridge works offline. An enabled update check reads release information from GitHub. When you choose to install an update, DS5 Bridge compares the downloaded EXE with the release's **SHA-256 checksum** before replacing it.
+Controller input and settings stay on your PC. The bridge works offline. When the build has a configured update repository and checks are enabled, it reads release information from GitHub. When you choose to install an update, DS5 Bridge compares the downloaded EXE with the release's **SHA-256 checksum** before replacing it.
 
 <details>
 <summary>See how an update looks</summary>
@@ -77,7 +77,7 @@ cargo test --locked --no-default-features
 
 The package contains `DS5Bridge.exe` and its SHA-256 file. The packaging script remaps build paths and scans the EXE for personal paths and email-like strings. The GitHub workflow validates the package when run manually. The repository owner handles publishing.
 
-If the updater cannot access a private release, use the verified EXE and SHA-256 file for a manual update.
+For automatic update checks, set `DS5BRIDGE_UPDATE_REPOSITORY` to the intended public repository in `owner/name` format at build time. Without this setting the build works offline. If the updater cannot access a private release, use the verified EXE and SHA-256 file for a manual update.
 
 </details>
 

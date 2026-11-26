@@ -1,7 +1,6 @@
 //! The window (a separate process, started on demand): main view, installer, updater and
 //! uninstaller in one frameless egui window with its own title bar.
 
-use crate::decode::*;
 use crate::i18n::{self, tr, trf};
 use crate::installer::{self, APP};
 use crate::ipc::{self, Shared, Status};
@@ -318,14 +317,14 @@ struct App {
     launched: std::time::Instant,
 }
 
-/// What the README screenshots show: Bluetooth, cross + R1 pressed, R2 half way, left stick pushed.
+/// Sample connection details with the controller resting in its neutral state.
 fn demo_status() -> Status {
     Status {
         running: true,
         slot: 1,
         controller: 2,
         exclusive: true,
-        pad: crate::decode::Pad { buttons: A | RB, lt: 0, rt: 170, lx: -0.55, ly: 0.45, rx: 0.0, ry: 0.0 },
+        pad: crate::decode::Pad::default(),
         rate: 592,
         fresh: 592,
         interval_ms: 1.69,
@@ -625,7 +624,7 @@ fn trace(p: &Painter, mut pts: Vec<Pos2>, stroke: Stroke, progress: f32) {
 
 /// The DS5 Bridge mark: one line, up, over an arch and down (a controller's top edge), then two
 /// dots for the sticks. 40 x 40 grid, `scale` 1.0 = 40 points; `seconds` since it began drawing.
-fn mark(p: &Painter, center: Pos2, scale: f32, ink: Color32, dots: Color32, seconds: f32) {
+pub(crate) fn mark(p: &Painter, center: Pos2, scale: f32, ink: Color32, dots: Color32, seconds: f32) {
     let draw = smooth(seconds / DRAW_SECONDS);
     if draw <= 0.0 {
         return;
@@ -1087,7 +1086,7 @@ impl App {
 
         caption(ui, tr("PROJECT"));
         ui.horizontal(|ui| {
-            link(ui, "GitHub", updater::REPO_URL);
+            if let Some(url) = updater::repository_url() { link(ui, "GitHub", &url); }
             ui.label(RichText::new("· MIT").size(12.5).color(MUTED));
         });
         ui.add_space(10.0);
@@ -1291,15 +1290,11 @@ impl App {
             }
         }
 
-        // hero: the controller floats and presses a button now and then; it makes room for options
+        // Keep the controller neutral while it floats and makes room for the installer options.
         let open = ui.ctx().animate_bool(ui.scope_id().with("opts"), self.show_options && self.step == 0);
         let hero_h = 250.0 - 130.0 * open;
         let hero = Rect::from_center_size(pos2(full.center().x, full.top() + 60.0 + hero_h / 2.0 + (now * 1.3).sin() * 4.0), vec2(full.width() - 70.0, hero_h));
-        let mut demo = demo_status();
-        let presses = [A, 0, RB, 0, Y, 0, UP, 0, B, 0, X, 0];
-        let beat = (now / 0.8) as usize % presses.len();
-        demo.pad = Pad { buttons: presses[beat], rt: if beat == 9 { 210 } else { 0 }, lx: 0.7 * (now * 1.2).cos(), ly: 0.7 * (now * 1.2).sin(), ..Pad::default() };
-        crate::ps5::paint(&p, hero, &demo);
+        crate::ps5::paint(&p, hero, &Status::default());
 
         // text
         let ty = hero.bottom() + 18.0;

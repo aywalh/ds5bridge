@@ -15,7 +15,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { lang: None, deadzone: 80, check_updates: true, last_check: 0, accent: 0xC9B37E, sounds: true, rate_limit: 0 }
+        Settings { lang: None, deadzone: 80, check_updates: crate::updater::repository().is_some(), last_check: 0, accent: 0xC9B37E, sounds: true, rate_limit: 0 }
     }
 }
 
