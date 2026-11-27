@@ -10,7 +10,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
 pub fn repository() -> Option<&'static str> {
-    let repo = option_env!("DS5BRIDGE_UPDATE_REPOSITORY")?;
+    // releases of this repository; a fork can point its own build elsewhere at compile time
+    let repo = option_env!("DS5BRIDGE_UPDATE_REPOSITORY").unwrap_or("aywalh/ds5bridge");
     let (owner, name) = repo.split_once('/')?;
     let valid = |part: &str| !part.is_empty() && part.bytes()
         .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'));
@@ -20,7 +21,6 @@ pub fn repository() -> Option<&'static str> {
 pub fn repository_url() -> Option<String> {
     repository().map(|repo| format!("https://github.com/{repo}"))
 }
-const DEFAULT_REPOSITORY_ID: u64 = 1471190113;
 const ASSET: &str = "DS5Bridge.exe";
 
 #[derive(Clone, Debug, PartialEq)]
@@ -74,11 +74,8 @@ pub fn newer(remote: &str, local: &str) -> bool {
 
 /// Newest release if it is newer than this build.
 pub fn check() -> Result<Option<Release>, String> {
-    let endpoint = match repository() {
-        Some(repo) => format!("repos/{repo}"),
-        None => format!("repositories/{DEFAULT_REPOSITORY_ID}"),
-    };
-    let body = get(&format!("https://api.github.com/{endpoint}/releases/latest"))?;
+    let repo = repository().ok_or("invalid update repository")?;
+    let body = get(&format!("https://api.github.com/repos/{repo}/releases/latest"))?;
     let r = parse_release(&body).ok_or("unexpected answer from GitHub")?;
     Ok(newer(&r.version, env!("CARGO_PKG_VERSION")).then_some(r))
 }
@@ -194,6 +191,14 @@ mod tests {
         assert!(is_release_asset(repo, &format!("{repo}/releases/download/v1.0.1/{ASSET}"), ASSET));
         assert!(!is_release_asset(repo, &format!("{repo}/releases/download/v1.0.1/{ASSET}?copy=1"), ASSET));
         assert!(!is_release_asset(repo, "https://github.com/example/other/releases/download/v1.0.1/DS5Bridge.exe", ASSET));
+    }
+
+    #[test]
+    fn official_builds_check_this_repository() {
+        // 1.0.1/1.0.2 shipped without it, so "Check now" never found or installed anything
+        if option_env!("DS5BRIDGE_UPDATE_REPOSITORY").is_none() {
+            assert_eq!(repository_url().as_deref(), Some("https://github.com/aywalh/ds5bridge"));
+        }
     }
 
     #[test]

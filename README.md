@@ -77,7 +77,7 @@ cargo test --locked --no-default-features
 
 The package contains `DS5Bridge.exe` and its SHA-256 file. The packaging script remaps build paths and scans the EXE for personal paths and email-like strings. The GitHub workflow validates the package when run manually. The repository owner handles publishing.
 
-For automatic update checks, set `DS5BRIDGE_UPDATE_REPOSITORY` to the intended public repository in `owner/name` format at build time. Without this setting the build works offline. If the updater cannot access a private release, use the verified EXE and SHA-256 file for a manual update.
+Update checks use the releases of `aywalh/ds5bridge`. A fork can set `DS5BRIDGE_UPDATE_REPOSITORY` (`owner/name`) at build time to use its own releases.
 
 </details>
 
