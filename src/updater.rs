@@ -58,12 +58,30 @@ pub fn parse_release(body: &str) -> Option<Release> {
     let exe = named(ASSET)?;
     Some(Release {
         version,
-        notes: j.get("body").and_then(Json::str).unwrap_or("").trim().to_string(),
+        notes: plain(j.get("body").and_then(Json::str).unwrap_or("")),
         url: exe.get("browser_download_url")?.str()?.to_string(),
         size: exe.get("size").and_then(Json::num).unwrap_or(0.0) as u64,
         sha256: exe.get("digest").and_then(Json::str).and_then(|d| d.strip_prefix("sha256:")).map(str::to_lowercase),
         sha256_url: named(&format!("{ASSET}.sha256")).and_then(|a| a.get("browser_download_url")?.str()).map(String::from),
     })
+}
+
+/// Release notes are Markdown on GitHub: show them as plain text. Headings go (the window
+/// already says which version), list dashes become bullets, emphasis and code marks disappear.
+pub fn plain(md: &str) -> String {
+    let lines: Vec<String> = md.lines()
+        .map(str::trim_end)
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .map(|l| {
+            let l = match l.trim_start().strip_prefix("- ").or_else(|| l.trim_start().strip_prefix("* ")) {
+                Some(rest) => format!("• {rest}"),
+                None => l.to_string(),
+            };
+            l.replace("**", "").replace('`', "").replace(" *", " ").replace("* ", " ").replace("*.", ".").replace("*,", ",")
+        })
+        .collect();
+    lines.join("
+").trim().to_string()
 }
 
 /// "1.10.0" > "1.9.3", ignoring a pre-release suffix.
@@ -191,6 +209,20 @@ mod tests {
         assert!(is_release_asset(repo, &format!("{repo}/releases/download/v1.0.1/{ASSET}"), ASSET));
         assert!(!is_release_asset(repo, &format!("{repo}/releases/download/v1.0.1/{ASSET}?copy=1"), ASSET));
         assert!(!is_release_asset(repo, "https://github.com/example/other/releases/download/v1.0.1/DS5Bridge.exe", ASSET));
+    }
+
+    #[test]
+    fn release_notes_are_plain_text() {
+        let md = "## DS5 Bridge 1.0.3
+
+- **Updates work again.** *Check now* finds `DS5Bridge.exe`.
+- Second
+
+Run **DS5Bridge.exe**.";
+        assert_eq!(plain(md), "• Updates work again. Check now finds DS5Bridge.exe.
+• Second
+
+Run DS5Bridge.exe.");
     }
 
     #[test]

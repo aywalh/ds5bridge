@@ -1,6 +1,6 @@
 [package]
 name = "ds5bridge"
-version = "1.0.3"
+version = "1.0.4"
 edition = "2021"
 description = "Use PlayStation controllers over USB or Bluetooth with optional Xbox 360 output on Windows. No telemetry."
 license = "MIT"
