@@ -1,4 +1,12 @@
 {
+ "Xbox 360 bridge is on": "Xbox 360 ブリッジはオンです",
+ "Your Xbox 360 bridge setting was restored. You can turn it off in DS5 Bridge.": "保存済みの設定で Xbox 360 ブリッジを有効にしました。DS5 Bridge でオフにできます。",
+ "If this game supports your PlayStation controller, turn off the Xbox 360 bridge. Seeing both controllers may cause stutter.": "ゲームが PlayStation コントローラーに対応している場合は Xbox 360 ブリッジをオフにしてください。両方が認識されると動作が途切れる場合があります。",
+ "Xbox 360 bridge": "Xbox 360 ブリッジ",
+ "Off": "オフ",
+ "Waiting for controller": "コントローラーを待機中",
+ "Waiting for controller · USB or Bluetooth": "コントローラーを待機中 · USB または Bluetooth",
+ "Games may see both the PlayStation controller and the virtual Xbox controller.": "ゲームが PlayStation コントローラーと仮想 Xbox コントローラーの両方を認識する場合があります。",
  "0 bytes": "0 バイト",
  "1 file": "1 ファイル",
  "APPEARANCE": "外観",

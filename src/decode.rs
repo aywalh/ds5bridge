@@ -1,4 +1,4 @@
-//! DualSense report -> Xbox 360 state. Pure logic, no Windows.
+//! PlayStation controller report -> Xbox 360 state. Pure logic, no Windows.
 
 // Xbox-360-Tastenbits (ViGEm Common.h, XUSB_BUTTON)
 pub const UP: u16 = 0x0001;
@@ -28,6 +28,19 @@ pub struct Pad {
     pub ry: f32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SonyModel { DualShock4, DualSense }
+
+impl SonyModel {
+    pub fn from_usb_ids(vendor: u16, product: u16) -> Option<Self> {
+        match (vendor, product) {
+            (0x054c, 0x05c4 | 0x09cc) => Some(Self::DualShock4),
+            (0x054c, 0x0ce6 | 0x0df2) => Some(Self::DualSense),
+            _ => None,
+        }
+    }
+}
+
 struct Layout { lx: usize, ly: usize, rx: usize, ry: usize, l2: usize, r2: usize, b0: usize, b1: usize, b2: usize }
 
 /// Vollreport (USB 0x01, Bluetooth 0x31 mit 1 Byte Versatz)
@@ -46,10 +59,13 @@ pub fn stick(v: f32) -> i16 {
 }
 
 /// None = kein Eingabe-Report (oder zu kurz)
-pub fn decode(r: &[u8], bluetooth: bool, deadzone: f32) -> Option<Pad> {
-    let (l, o) = match *r.first()? {
-        0x31 => (&FULL, 1),
-        0x01 => (if bluetooth { &SHORT } else { &FULL }, 0),
+pub fn decode(r: &[u8], model: SonyModel, bluetooth: bool, deadzone: f32) -> Option<Pad> {
+    let (l, o) = match (model, bluetooth, *r.first()?) {
+        (SonyModel::DualShock4, true, 0x11) => (&SHORT, 2),
+        (SonyModel::DualShock4, _, 0x01) => (&SHORT, 0),
+        (SonyModel::DualSense, true, 0x31) => (&FULL, 1),
+        (SonyModel::DualSense, true, 0x01) => (&SHORT, 0),
+        (SonyModel::DualSense, false, 0x01) => (&FULL, 0),
         _ => return None,
     };
     let b = |i: usize| r.get(i + o).copied();
@@ -118,7 +134,7 @@ mod tests {
 
     #[test]
     fn usb_full_report() {
-        let p = decode(&usb(), false, 0.08).unwrap();
+        let p = decode(&usb(), SonyModel::DualSense, false, 0.08).unwrap();
         assert_eq!(p.buttons, A | UP | LB | GUIDE);
         assert_eq!((p.lx, p.ly, p.rx, p.ry, p.lt, p.rt), (0.0, 1.0, 0.0, 0.0, 255, 0));
         assert_eq!(stick(p.ly), 32767);
@@ -130,27 +146,45 @@ mod tests {
         let mut bt = vec![0x31, 0x00];
         bt.extend_from_slice(&u[1..]);
         bt.resize(78, 0);
-        assert_eq!(decode(&bt, true, 0.08), decode(&u, false, 0.08));
+        assert_eq!(decode(&bt, SonyModel::DualSense, true, 0.08), decode(&u, SonyModel::DualSense, false, 0.08));
     }
 
     #[test]
     fn bluetooth_short_report() {
         let mut s = vec![0u8; 78];
         s[..9].copy_from_slice(&[0x01, 128, 0, 128, 128, 0x20, 0, 0, 255]);
-        let p = decode(&s, true, 0.08).unwrap();
+        let p = decode(&s, SonyModel::DualSense, true, 0.08).unwrap();
         assert_eq!(p.buttons, A | UP);
         assert_eq!(p.lt, 255);
     }
 
     #[test]
     fn edges() {
-        assert_eq!(decode(&[0x05; 64], false, 0.08), None);
-        assert_eq!(decode(&[0x01, 1, 2], false, 0.08), None);
+        assert_eq!(decode(&[0x05; 64], SonyModel::DualSense, false, 0.08), None);
+        assert_eq!(decode(&[0x01, 1, 2], SonyModel::DualSense, false, 0.08), None);
         assert_eq!(axis(255, 0.08), 1.0);
         assert_eq!(axis(0, 0.08), -1.0);
         assert_eq!(axis(0x81, 0.08), 0.0); // leichter Ruhe-Versatz -> Totzone
         let mut r = usb();
         r[8] = 0x08; // D-Pad neutral, keine Gesichtstaste
-        assert_eq!(decode(&r, false, 0.08).unwrap().buttons, LB | GUIDE);
+        assert_eq!(decode(&r, SonyModel::DualSense, false, 0.08).unwrap().buttons, LB | GUIDE);
+    }
+}
+
+#[cfg(test)]
+mod dualshock_tests {
+    use super::*;
+
+    #[test]
+    fn dualshock_usb_and_bluetooth_have_the_same_controls() {
+        let usb = [1, 255, 128, 128, 0, 0x21, 0x43, 1, 65, 170];
+        let mut bt = [0u8; 78];
+        bt[0] = 0x11;
+        bt[3..12].copy_from_slice(&usb[1..]);
+        let p = decode(&usb, SonyModel::DualShock4, false, 0.0).unwrap();
+        assert_eq!(decode(&bt, SonyModel::DualShock4, true, 0.0), Some(p));
+        assert_eq!(p.buttons, A | UP | RIGHT | LB | RB | LS | GUIDE);
+        assert_eq!((p.lt, p.rt, p.lx, p.ry), (65, 170, 1.0, 1.0));
+        assert!(decode(&bt[..10], SonyModel::DualShock4, true, 0.0).is_none());
     }
 }

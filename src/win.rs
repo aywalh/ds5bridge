@@ -2,11 +2,12 @@
 //! controller through the open-source ViGEmBus driver (protocol from Nefarius' ViGEmClient, MIT:
 //! BusShared.h / Common.h).
 
-use crate::decode::{stick, Pad};
+use crate::decode::{stick, Pad, SonyModel};
 use crate::sys::*;
 use std::ffi::c_void;
 
-const GENERIC_RW: u32 = 0x8000_0000 | 0x4000_0000;
+const GENERIC_READ: u32 = 0x8000_0000;
+const GENERIC_RW: u32 = GENERIC_READ | 0x4000_0000;
 const SHARE_RW: u32 = 0x1 | 0x2;
 const OPEN_EXISTING: u32 = 3;
 const FILE_FLAG_OVERLAPPED: u32 = 0x4000_0000;
@@ -23,8 +24,6 @@ const IOCTL_WAIT_READY: u32 = ctl(0x804);
 const IOCTL_XUSB_SUBMIT: u32 = ctl(0xA02);
 const VIGEM_GUID: Guid = Guid { d1: 0x96E4_2B22, d2: 0xF5E9, d3: 0x42F8, d4: [0xB0, 0x43, 0xED, 0x0F, 0x93, 0x2F, 0x01, 0x4F] };
 
-const SONY: u16 = 0x054C;
-const DUALSENSE: [u16; 2] = [0x0CE6, 0x0DF2]; // DualSense, DualSense Edge
 
 /// Error codes shown (translated) in the UI.
 pub const ERR_NO_VIGEM: u32 = 1;
@@ -163,41 +162,48 @@ impl Drop for VirtualX360 {
 
 // -------------------------------------------------------------- DualSense ---
 
-pub struct DualSense {
+pub struct SonyController {
     h: Handle,
     ov: Box<Overlapped>, // fixed address while a read is in flight
     buf: Vec<u8>,
+    pub model: SonyModel,
     pub bluetooth: bool,
     pub exclusive: bool,
 }
 
-impl DualSense {
-    pub fn find() -> Option<Self> {
+impl SonyController {
+    pub fn find(bridge: bool) -> Option<Self> {
         let mut g = Guid::default();
         unsafe { HidD_GetHidGuid(&mut g) };
         for path in device_paths(&g) {
-            let Some(caps) = (unsafe { gamepad_caps(&path) }) else { continue };
+            let Some((model, caps)) = (unsafe { gamepad_caps(&path) }) else { continue };
             let bluetooth = caps.input_len > 64; // USB = 64 bytes, Bluetooth = 78 bytes
             if bluetooth && !bt_settled(&path) {
                 continue; // Windows is still setting it up (pairing): don't interfere
             }
             // USB: try exclusive first (games then don't see the DualSense twice), else shared.
             // Bluetooth: shared only, so Windows' own Bluetooth HID stack stays undisturbed.
-            let shares: &[u32] = if bluetooth { &[SHARE_RW] } else { &[0, SHARE_RW] };
+            let shares: &[u32] = if bridge && !bluetooth { &[0, SHARE_RW] } else { &[SHARE_RW] };
             for &share in shares {
-                let h = unsafe { CreateFileW(path.as_ptr(), GENERIC_RW, share, std::ptr::null(), OPEN_EXISTING, FILE_FLAG_OVERLAPPED, 0) };
+                let access = if bridge && model == SonyModel::DualSense && bluetooth { GENERIC_RW } else { GENERIC_READ };
+                let h = unsafe { CreateFileW(path.as_ptr(), access, share, std::ptr::null(), OPEN_EXISTING, FILE_FLAG_OVERLAPPED, 0) };
                 if h == INVALID {
                     continue;
                 }
-                if bluetooth {
+                if bluetooth && model == SonyModel::DualSense && bridge {
                     // reading feature report 0x05 (calibration) switches Bluetooth to full report 0x31
                     let mut f = vec![0u8; (caps.feature_len as usize).max(41)];
                     f[0] = 0x05;
                     unsafe { HidD_GetFeature(h, f.as_mut_ptr() as *mut c_void, f.len() as u32) };
                 }
                 let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
-                return Some(DualSense {
+                if event == 0 {
+                    unsafe { CloseHandle(h) };
+                    continue;
+                }
+                return Some(SonyController {
                     h,
+                    model,
                     ov: Box::new(Overlapped { internal: 0, internal_high: 0, offset: 0, offset_high: 0, event }),
                     buf: vec![0; caps.input_len as usize],
                     bluetooth,
@@ -231,7 +237,7 @@ impl DualSense {
     }
 }
 
-impl Drop for DualSense {
+impl Drop for SonyController {
     fn drop(&mut self) {
         unsafe {
             CloseHandle(self.h);
@@ -256,15 +262,17 @@ fn bt_settled(path: &[u16]) -> bool {
     }
 }
 
-/// HID caps if the path is a DualSense gamepad collection.
-unsafe fn gamepad_caps(path: &[u16]) -> Option<HidpCaps> {
+/// Identify a PlayStation gamepad collection by its HID attributes.
+unsafe fn gamepad_caps(path: &[u16]) -> Option<(SonyModel, HidpCaps)> {
     let q = CreateFileW(path.as_ptr(), 0, SHARE_RW, std::ptr::null(), OPEN_EXISTING, 0, 0); // query only
     if q == INVALID {
         return None;
     }
     let mut a = HiddAttributes { size: std::mem::size_of::<HiddAttributes>() as u32, ..Default::default() };
     let mut caps: HidpCaps = std::mem::zeroed();
-    let mut ok = HidD_GetAttributes(q, &mut a) != 0 && a.vid == SONY && DUALSENSE.contains(&a.pid);
+    let model = (HidD_GetAttributes(q, &mut a) != 0)
+        .then(|| SonyModel::from_usb_ids(a.vid, a.pid)).flatten();
+    let mut ok = model.is_some();
     if ok {
         let mut pp = 0isize;
         ok = HidD_GetPreparsedData(q, &mut pp) != 0;
@@ -274,7 +282,7 @@ unsafe fn gamepad_caps(path: &[u16]) -> Option<HidpCaps> {
         }
     }
     CloseHandle(q);
-    ok.then_some(caps)
+    model.filter(|_| ok).map(|model| (model, caps))
 }
 
 #[cfg(test)]

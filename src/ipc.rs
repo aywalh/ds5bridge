@@ -27,7 +27,7 @@ pub struct Shared {
     // bridge -> UI
     pub running: AtomicU32,    // virtual controller plugged in
     pub slot: AtomicU32,       // ViGEm serial (Xbox slot)
-    pub controller: AtomicU32, // 0 none, 1 USB, 2 Bluetooth
+    pub controller: AtomicU32, // 0 none, 1/2 DualSense USB/BT, 3/4 DualShock 4 USB/BT
     pub exclusive: AtomicU32,
     pub buttons: AtomicU32,
     pub triggers: AtomicU32, // lt | rt << 8

@@ -1,4 +1,12 @@
 {
+ "Xbox 360 bridge is on": "Cầu nối Xbox 360 đang bật",
+ "Your Xbox 360 bridge setting was restored. You can turn it off in DS5 Bridge.": "Đã khôi phục cài đặt cầu nối Xbox 360. Bạn có thể tắt trong DS5 Bridge.",
+ "If this game supports your PlayStation controller, turn off the Xbox 360 bridge. Seeing both controllers may cause stutter.": "Nếu trò chơi hỗ trợ tay cầm PlayStation, hãy tắt cầu nối Xbox 360. Nhận cả hai tay cầm có thể khiến trò chơi giật.",
+ "Xbox 360 bridge": "Cầu nối Xbox 360",
+ "Off": "Tắt",
+ "Waiting for controller": "Đang chờ tay cầm",
+ "Waiting for controller · USB or Bluetooth": "Đang chờ tay cầm · USB hoặc Bluetooth",
+ "Games may see both the PlayStation controller and the virtual Xbox controller.": "Trò chơi có thể nhận cả tay cầm PlayStation lẫn tay cầm Xbox ảo.",
  "0 bytes": "0 byte",
  "1 file": "1 tệp",
  "APPEARANCE": "GIAO DIỆN",

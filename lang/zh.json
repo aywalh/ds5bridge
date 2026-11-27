@@ -1,4 +1,12 @@
 {
+ "Xbox 360 bridge is on": "Xbox 360 桥接已开启",
+ "Your Xbox 360 bridge setting was restored. You can turn it off in DS5 Bridge.": "已恢复保存的 Xbox 360 桥接设置。你可以在 DS5 Bridge 中关闭。",
+ "If this game supports your PlayStation controller, turn off the Xbox 360 bridge. Seeing both controllers may cause stutter.": "如果游戏支持 PlayStation 手柄，请关闭 Xbox 360 桥接。同时识别两个手柄可能导致卡顿。",
+ "Xbox 360 bridge": "Xbox 360 桥接",
+ "Off": "关闭",
+ "Waiting for controller": "正在等待手柄",
+ "Waiting for controller · USB or Bluetooth": "正在等待手柄 · USB 或蓝牙",
+ "Games may see both the PlayStation controller and the virtual Xbox controller.": "游戏可能会同时识别 PlayStation 手柄和虚拟 Xbox 手柄。",
  "0 bytes": "0 字节",
  "1 file": "1 个文件",
  "APPEARANCE": "外观",

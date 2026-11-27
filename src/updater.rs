@@ -20,6 +20,7 @@ pub fn repository() -> Option<&'static str> {
 pub fn repository_url() -> Option<String> {
     repository().map(|repo| format!("https://github.com/{repo}"))
 }
+const DEFAULT_REPOSITORY_ID: u64 = 1471190113;
 const ASSET: &str = "DS5Bridge.exe";
 
 #[derive(Clone, Debug, PartialEq)]
@@ -73,8 +74,11 @@ pub fn newer(remote: &str, local: &str) -> bool {
 
 /// Newest release if it is newer than this build.
 pub fn check() -> Result<Option<Release>, String> {
-    let Some(repo) = repository() else { return Ok(None) };
-    let body = get(&format!("https://api.github.com/repos/{repo}/releases/latest"))?;
+    let endpoint = match repository() {
+        Some(repo) => format!("repos/{repo}"),
+        None => format!("repositories/{DEFAULT_REPOSITORY_ID}"),
+    };
+    let body = get(&format!("https://api.github.com/{endpoint}/releases/latest"))?;
     let r = parse_release(&body).ok_or("unexpected answer from GitHub")?;
     Ok(newer(&r.version, env!("CARGO_PKG_VERSION")).then_some(r))
 }

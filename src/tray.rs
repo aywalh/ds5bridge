@@ -2,9 +2,11 @@
 //! idles at a few MB of RAM and near-zero CPU. The window opens as a separate process on demand
 //! and closing it does not stop the bridge.
 
+use crate::game_notice::{GameNotice, Notice};
 use crate::i18n::{tr_native, trf_native};
 use crate::ipc::{self, Shared};
 use crate::sys::*;
+use std::cell::RefCell;
 use std::sync::atomic::Ordering::Relaxed;
 
 const CLASS: &str = "DS5BridgeTray";
@@ -15,6 +17,10 @@ const ID_QUIT: usize = 2;
 
 static mut TASKBAR_CREATED: u32 = 0;
 static mut ICON: isize = 0;
+
+thread_local! {
+    static GAME_NOTICE: RefCell<GameNotice> = RefCell::new(GameNotice::default());
+}
 
 fn shared() -> &'static Shared {
     static S: std::sync::OnceLock<&'static Shared> = std::sync::OnceLock::new();
@@ -54,14 +60,10 @@ pub fn start_and_show() {
 
 fn tooltip() -> String {
     let s = shared().status();
-    let state = if s.paused {
-        tr_native("Paused").to_string()
-    } else {
-        match s.controller {
-            1 => trf_native("Connected via {}", &[&"USB"]),
-            2 => trf_native("Connected via {}", &[&"Bluetooth"]),
-            _ => tr_native("Waiting for DualSense").to_string(),
-        }
+    let state = match s.controller {
+        1 | 3 => trf_native("Connected via {}", &[&"USB"]),
+        2 | 4 => trf_native("Connected via {}", &[&"Bluetooth"]),
+        _ => tr_native("Waiting for controller").to_string(),
     };
     format!("DS5 Bridge – {state}")
 }
@@ -76,6 +78,19 @@ fn icon_data(hwnd: Hwnd) -> NotifyIconDataW {
     d.icon = unsafe { ICON };
     fill_wide(&mut d.tip, &tooltip());
     d
+}
+
+fn notify_bridge(hwnd: Hwnd, notice: Notice) -> bool {
+    let mut data = icon_data(hwnd);
+    data.flags = 0x10; // NIF_INFO
+    data.info_flags = 0x02 | 0x10; // NIIF_WARNING | NIIF_NOSOUND
+    fill_wide(&mut data.info_title, tr_native("Xbox 360 bridge is on"));
+    let message = match notice {
+        Notice::Restored => "Your Xbox 360 bridge setting was restored. You can turn it off in DS5 Bridge.",
+        Notice::InGame(_) => "If this game supports your PlayStation controller, turn off the Xbox 360 bridge. Seeing both controllers may cause stutter.",
+    };
+    fill_wide(&mut data.info, tr_native(message));
+    unsafe { Shell_NotifyIconW(1, &data) != 0 }
 }
 
 fn show_menu(hwnd: Hwnd) {
@@ -104,7 +119,7 @@ extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, w: usize, l: isize) -> isize {
     unsafe {
         match msg {
             WM_TRAY => match (l & 0xFFFF) as u32 {
-                0x0202 => open_ui(),                   // WM_LBUTTONUP
+                0x0202 | 0x0405 => open_ui(),  // WM_LBUTTONUP or NIN_BALLOONUSERCLICK
                 0x0205 | 0x007B => show_menu(hwnd),    // WM_RBUTTONUP | WM_CONTEXTMENU
                 _ => {}
             },
@@ -117,6 +132,14 @@ extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, w: usize, l: isize) -> isize {
                 } else {
                     crate::i18n::set(sh.lang.load(Relaxed) as usize);
                     Shell_NotifyIconW(1, &icon_data(hwnd)); // NIM_MODIFY
+                    GAME_NOTICE.with(|tracker| {
+                        let mut tracker = tracker.borrow_mut();
+                        let enabled = sh.paused.load(Relaxed) == 0;
+                        let active = sh.running.load(Relaxed) != 0;
+                        if let Some(notice) = tracker.poll(enabled, active) {
+                            if notify_bridge(hwnd, notice) { tracker.delivered(notice); }
+                        }
+                    });
                 }
             }
             0x0002 => {
@@ -146,7 +169,8 @@ pub fn run_background(show: bool) {
     let sh = shared();
     let s = crate::settings::load();
     sh.quit.store(0, Relaxed);
-    sh.paused.store(0, Relaxed);
+    sh.paused.store(!s.bridge_enabled as u32, Relaxed);
+    GAME_NOTICE.with(|tracker| *tracker.borrow_mut() = GameNotice::new(s.bridge_enabled));
     sh.deadzone.store(s.deadzone, Relaxed);
     sh.rate_limit.store(s.rate_limit, Relaxed);
     sh.lang.store(crate::i18n::cur() as u32, Relaxed);

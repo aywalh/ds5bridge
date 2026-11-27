@@ -872,13 +872,13 @@ impl App {
                 _ => tr("Sending to the virtual controller failed"),
             };
             (e.to_string(), ERR)
-        } else if s.paused {
-            (tr("Paused").to_string(), MUTED)
         } else {
             match s.controller {
-                1 => (trf("Connected via {}", &[&"USB"]), OK),
-                2 => (trf("Connected via {}", &[&"Bluetooth"]), OK),
-                _ => (tr("Waiting for DualSense · USB or Bluetooth").to_string(), WAIT),
+                1 => ("DualSense · USB".to_string(), OK),
+                2 => ("DualSense · Bluetooth".to_string(), OK),
+                3 => ("DualShock 4 · USB".to_string(), OK),
+                4 => ("DualShock 4 · Bluetooth".to_string(), OK),
+                _ => (tr("Waiting for controller · USB or Bluetooth").to_string(), WAIT),
             }
         };
         ui.horizontal(|ui| {
@@ -927,11 +927,11 @@ impl App {
         let live = s.rate > 0;
         let dash = || "–".to_string();
         let conn = match s.controller {
-            1 => "USB".to_string(),
-            2 => "Bluetooth".to_string(),
+            1 | 3 => "USB".to_string(),
+            2 | 4 => "Bluetooth".to_string(),
             _ => dash(),
         };
-        let slot = if s.slot > 0 { trf("Xbox slot {}", &[&s.slot]) } else { dash() };
+        let slot = if s.paused { tr("Off").to_string() } else if s.slot > 0 { trf("Xbox slot {}", &[&s.slot]) } else { dash() };
         let shared = if s.controller != 0 && !s.exclusive { format!(" · {}", tr("shared")) } else { String::new() };
         field(ui, tr("Connection"), |ui| {
             ui.label(RichText::new(format!("{conn}{shared}")).size(14.0));
@@ -954,8 +954,10 @@ impl App {
 
         caption(ui, tr("INPUT"));
         let mut active = !s.paused;
-        if check(ui, &mut active, tr("Bridge active")).changed() {
+        if check(ui, &mut active, tr("Xbox 360 bridge")).changed() {
             self.sh.paused.store(!active as u32, Relaxed);
+            self.settings.bridge_enabled = active;
+            self.save();
         }
         field(ui, tr("Stick deadzone"), |ui| {
             let r = slider(ui, &mut self.deadzone, 0.0, 0.3, 0.01, |v| format!("{:.0} %", v * 100.0));
@@ -984,9 +986,9 @@ impl App {
             }
         });
         ui.label(RichText::new(tr("Auto passes on every report: about 250 Hz over USB, about 600 Hz over Bluetooth. More over USB needs a driver.")).size(12.0).color(MUTED));
-        if s.controller != 0 && !s.exclusive {
+        if s.running && s.controller != 0 && !s.exclusive {
             ui.add_space(4.0);
-            ui.label(RichText::new(tr("Another program (e.g. Steam) also reads the DualSense. Games may see double input.")).size(12.0).color(MUTED));
+            ui.label(RichText::new(tr("Games may see both the PlayStation controller and the virtual Xbox controller.")).size(12.0).color(MUTED));
         }
     }
 

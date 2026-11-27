@@ -1,4 +1,12 @@
 {
+ "Xbox 360 bridge is on": "Naka-on ang Xbox 360 bridge",
+ "Your Xbox 360 bridge setting was restored. You can turn it off in DS5 Bridge.": "Naibalik ang setting ng Xbox 360 bridge. Maaari mo itong i-off sa DS5 Bridge.",
+ "If this game supports your PlayStation controller, turn off the Xbox 360 bridge. Seeing both controllers may cause stutter.": "Kung suportado ng laro ang PlayStation controller, i-off ang Xbox 360 bridge. Maaaring magdulot ng pag-utal ang dalawang controller.",
+ "Xbox 360 bridge": "Xbox 360 bridge",
+ "Off": "Naka-off",
+ "Waiting for controller": "Naghihintay sa controller",
+ "Waiting for controller · USB or Bluetooth": "Naghihintay sa controller · USB o Bluetooth",
+ "Games may see both the PlayStation controller and the virtual Xbox controller.": "Maaaring makita ng laro ang PlayStation controller at ang virtual Xbox controller.",
  "0 bytes": "0 byte",
  "1 file": "1 file",
  "APPEARANCE": "ITSURA",

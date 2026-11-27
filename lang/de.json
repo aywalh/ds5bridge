@@ -1,4 +1,12 @@
 {
+ "Xbox 360 bridge is on": "Xbox-360-Bridge ist an",
+ "Your Xbox 360 bridge setting was restored. You can turn it off in DS5 Bridge.": "Die Xbox-360-Bridge wurde wie gespeichert eingeschaltet. Du kannst sie in DS5 Bridge ausschalten.",
+ "If this game supports your PlayStation controller, turn off the Xbox 360 bridge. Seeing both controllers may cause stutter.": "Unterstützt das Spiel deinen PlayStation-Controller direkt, schalte die Xbox-360-Bridge aus. Zwei Controller können zu Rucklern führen.",
+ "Xbox 360 bridge": "Xbox-360-Bridge",
+ "Off": "Aus",
+ "Waiting for controller": "Warte auf Controller",
+ "Waiting for controller · USB or Bluetooth": "Warte auf Controller · USB oder Bluetooth",
+ "Games may see both the PlayStation controller and the virtual Xbox controller.": "Spiele können den PlayStation-Controller und den virtuellen Xbox-Controller gleichzeitig erkennen.",
  "0 bytes": "0 Bytes",
  "1 file": "1 Datei",
  "APPEARANCE": "DARSTELLUNG",

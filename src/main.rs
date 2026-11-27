@@ -15,6 +15,7 @@
 mod bridge;
 mod decode;
 mod gui;
+mod game_notice;
 mod ps5;
 mod i18n;
 mod icon;

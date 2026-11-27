@@ -2,7 +2,7 @@
 
 ![DS5 Bridge for Windows, with USB and Bluetooth support](docs/banner.png)
 
-Use a PS5 DualSense in Windows games that expect an Xbox controller. Plug it in or pair it over Bluetooth, then let DS5 Bridge run quietly in the notification area.
+Connect a DualSense or DualShock 4 over USB or Bluetooth. DS5 Bridge shows live input and can provide a virtual Xbox 360 controller for Windows games that expect one.
 
 **Windows 10 or 11 · USB or Bluetooth · No account or telemetry**
 
@@ -10,7 +10,7 @@ Use a PS5 DualSense in Windows games that expect an Xbox controller. Plug it in 
 
 ### 1. Install the bridge
 
-Run `DS5Bridge.exe` and choose **Install**. Open **Options** if you want a desktop shortcut or want the bridge to start with Windows. If the app reports a missing virtual controller driver, install [ViGEmBus](https://github.com/nefarius/ViGEmBus/releases).
+Run `DS5Bridge.exe` and choose **Install**. Open **Options** if you want a desktop shortcut or want the bridge to start with Windows. If you enable Xbox 360 output and the app reports a missing virtual controller driver, install [ViGEmBus](https://github.com/nefarius/ViGEmBus/releases).
 
 <details>
 <summary>See the installer</summary>
@@ -21,13 +21,13 @@ Run `DS5Bridge.exe` and choose **Install**. Open **Options** if you want a deskt
 
 </details>
 
-### 2. Connect your DualSense
+### 2. Connect your PlayStation controller
 
-Use a USB cable, or hold **Create + PS** until the light bar flashes and pair the controller in Windows Bluetooth settings. Open DS5 Bridge from its tray icon. The **Controller** tab shows how the pad is connected and which virtual Xbox slot the game will see.
+Use a USB cable, or hold **Create + PS** on DualSense or **Share + PS** on DualShock 4 until the light bar flashes and pair it in Windows Bluetooth settings. Open DS5 Bridge from its tray icon. The **Controller** tab shows the controller model, connection and live input.
 
 ### 3. Check your inputs and play
 
-Press a button or move a stick. When the preview responds and a virtual slot is listed, launch your game. You can close the window and keep playing. To stop the bridge, choose **Quit** from the tray menu.
+Press a button or move a stick to check the live preview. **Xbox 360 bridge** is off by default. If your game needs Xbox input, enable it in the **Controller** tab and wait for an Xbox slot to appear. You can close the window and keep playing. Turning the bridge off removes the virtual Xbox controller while the preview stays available.
 
 ![The DS5 Bridge Controller tab with a Bluetooth connection, a virtual Xbox slot and the live preview](docs/screenshot-main.png)
 
@@ -48,7 +48,7 @@ Change the accent colour, language and sounds in **Settings**.
 
 ## Updates and privacy
 
-Controller input and settings stay on your PC. The bridge works offline. When the build has a configured update repository and checks are enabled, it reads release information from GitHub. When you choose to install an update, DS5 Bridge compares the downloaded EXE with the release's **SHA-256 checksum** before replacing it.
+Controller input and settings stay on your PC. The bridge works offline. When update checks are enabled, DS5 Bridge reads release information from GitHub. When you choose to install an update, DS5 Bridge compares the downloaded EXE with the release's **SHA-256 checksum** before replacing it.
 
 <details>
 <summary>See how an update looks</summary>
@@ -62,7 +62,7 @@ Controller input and settings stay on your PC. The bridge works offline. When th
 ## Help and source code
 
 - **Use it without installing:** run `DS5Bridge.exe --portable`.
-- **The game sees no controller:** check ViGEmBus and the virtual slot in the Controller tab.
+- **The game sees no controller:** enable **Xbox 360 bridge** if the game expects Xbox input, then check ViGEmBus and the virtual slot.
 - **The game sees two controllers:** check whether Steam Input or another remapper is reading the same pad.
 - **Bluetooth keeps dropping:** remove the controller in Windows Bluetooth settings and pair it again.
 - **Uninstall:** go to **Windows Settings → Apps → Installed apps → DS5 Bridge**.

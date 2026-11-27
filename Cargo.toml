@@ -1,11 +1,11 @@
 [package]
 name = "ds5bridge"
-version = "1.0.1"
+version = "1.0.2"
 edition = "2021"
-description = "Use a PS5 DualSense (USB or Bluetooth) as an Xbox controller on Windows. Offline, no telemetry."
+description = "Use PlayStation controllers over USB or Bluetooth with optional Xbox 360 output on Windows. No telemetry."
 license = "MIT"
 readme = "README.md"
-keywords = ["dualsense", "ps5", "controller", "xinput", "vigem"]
+keywords = ["dualsense", "dualshock", "controller", "xinput", "vigem"]
 categories = ["hardware-support"]
 
 [dependencies]

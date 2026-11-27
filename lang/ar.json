@@ -1,4 +1,12 @@
 {
+ "Xbox 360 bridge is on": "جسر Xbox 360 قيد التشغيل",
+ "Your Xbox 360 bridge setting was restored. You can turn it off in DS5 Bridge.": "تم استعادة إعداد جسر Xbox 360. يمكنك إيقافه في DS5 Bridge.",
+ "If this game supports your PlayStation controller, turn off the Xbox 360 bridge. Seeing both controllers may cause stutter.": "إذا كانت اللعبة تدعم وحدة تحكم PlayStation، فأوقف جسر Xbox 360. قد يؤدي ظهور وحدتي تحكم إلى تقطّع اللعب.",
+ "Xbox 360 bridge": "جسر Xbox 360",
+ "Off": "إيقاف",
+ "Waiting for controller": "بانتظار وحدة التحكم",
+ "Waiting for controller · USB or Bluetooth": "بانتظار وحدة التحكم · USB أو Bluetooth",
+ "Games may see both the PlayStation controller and the virtual Xbox controller.": "قد تتعرّف الألعاب على وحدة تحكم PlayStation ووحدة تحكم Xbox الافتراضية معًا.",
  "0 bytes": "0 بايت",
  "1 file": "ملف واحد",
  "APPEARANCE": "المظهر",

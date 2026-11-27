@@ -112,6 +112,8 @@ pub struct NotifyIconDataW {
 extern "system" {
     pub fn CreateFileW(name: *const u16, access: u32, share: u32, sa: *const c_void, disp: u32, flags: u32, tmpl: Handle) -> Handle;
     pub fn CloseHandle(h: Handle) -> i32;
+    pub fn OpenProcess(access: u32, inherit: i32, pid: u32) -> Handle;
+    pub fn QueryFullProcessImageNameW(process: Handle, flags: u32, name: *mut u16, size: *mut u32) -> i32;
     pub fn DeviceIoControl(h: Handle, code: u32, inb: *const c_void, insz: u32, outb: *mut c_void, outsz: u32, ret: *mut u32, ov: *mut Overlapped) -> i32;
     pub fn ReadFile(h: Handle, buf: *mut u8, len: u32, read: *mut u32, ov: *mut Overlapped) -> i32;
     pub fn GetOverlappedResult(h: Handle, ov: *mut Overlapped, n: *mut u32, wait: i32) -> i32;
@@ -165,6 +167,8 @@ extern "system" {
     pub fn DestroyMenu(menu: isize) -> i32;
     pub fn GetCursorPos(p: *mut Point) -> i32;
     pub fn SetForegroundWindow(h: Hwnd) -> i32;
+    pub fn GetForegroundWindow() -> Hwnd;
+    pub fn GetWindowThreadProcessId(h: Hwnd, pid: *mut u32) -> u32;
     pub fn ShowWindow(h: Hwnd, cmd: i32) -> i32;
     pub fn RegisterWindowMessageW(name: *const u16) -> u32;
     pub fn CreateIconFromResourceEx(bits: *const u8, size: u32, icon: i32, ver: u32, cx: i32, cy: i32, flags: u32) -> isize;
@@ -174,6 +178,7 @@ extern "system" {
 #[link(name = "shell32")]
 extern "system" {
     pub fn Shell_NotifyIconW(msg: u32, data: *const NotifyIconDataW) -> i32;
+    pub fn SHQueryUserNotificationState(state: *mut i32) -> i32;
     pub fn ShellExecuteW(h: Hwnd, op: *const u16, file: *const u16, params: *const u16, dir: *const u16, show: i32) -> isize;
     pub fn SHGetKnownFolderPath(id: *const Guid, flags: u32, token: isize, out: *mut *mut u16) -> i32;
 }
